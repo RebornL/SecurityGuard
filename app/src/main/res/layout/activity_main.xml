@@ -1,74 +1,810 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="16dp"
+    android:background="@color/background"
+    android:fillViewport="true"
     tools:context="com.example.securityguard.MainActivity">
-
-    <TextView
-        android:id="@+id/titleTextView"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="安全验证测试"
-        android:textSize="24sp"
-        android:textStyle="bold"
-        android:gravity="center"
-        android:paddingBottom="16dp"/>
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center">
+        android:orientation="vertical"
+        android:padding="16dp">
 
-        <Button
-            android:id="@+id/checkButton"
-            android:layout_width="wrap_content"
+        <!-- 标题栏 -->
+        <TextView
+            android:id="@+id/titleTextView"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="安全检查"
-            android:layout_marginEnd="8dp"/>
+            android:text="安全检测中心"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:textColor="@color/primary"
+            android:gravity="center"
+            android:paddingBottom="8dp"/>
 
-        <Button
-            android:id="@+id/reportButton"
-            android:layout_width="wrap_content"
+        <!-- 综合状态卡片 -->
+        <LinearLayout
+            android:id="@+id/overallStatusCard"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="安全报告"
-            android:layout_marginEnd="8dp"/>
+            android:orientation="vertical"
+            android:background="@color/status_neutral_bg"
+            android:padding="16dp"
+            android:layout_marginBottom="16dp">
 
-        <Button
-            android:id="@+id/signatureButton"
-            android:layout_width="wrap_content"
+            <TextView
+                android:id="@+id/overallStatusTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="综合安全状态"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_primary"/>
+
+            <TextView
+                android:id="@+id/overallStatusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="正在检测..."
+                android:textSize="14sp"
+                android:textColor="@color/text_secondary"
+                android:layout_marginTop="8dp"/>
+
+            <!-- 风险等级进度条 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="12dp"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="风险等级:"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_secondary"/>
+
+                <ProgressBar
+                    android:id="@+id/riskLevelProgress"
+                    style="@android:style/Widget.ProgressBar.Horizontal"
+                    android:layout_width="0dp"
+                    android:layout_height="12dp"
+                    android:layout_weight="1"
+                    android:layout_marginStart="8dp"
+                    android:max="100"
+                    android:progress="0"/>
+
+                <TextView
+                    android:id="@+id/riskLevelText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0%"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginStart="8dp"/>
+
+            </LinearLayout>
+
+        </LinearLayout>
+
+        <!-- 签名对比检测卡片 -->
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="获取签名"/>
+            android:orientation="vertical"
+            android:background="@color/card_background"
+            android:padding="16dp"
+            android:layout_marginBottom="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="签名对比检测"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:textColor="@color/primary"
+                android:drawablePadding="8dp"/>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider"
+                android:layout_marginTop="8dp"
+                android:layout_marginBottom="12dp"/>
+
+            <!-- Native层签名 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@color/native_bg"
+                android:padding="12dp"
+                android:layout_marginBottom="8dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="[C++ Native]"
+                        android:textSize="12sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/native_indicator"/>
+
+                    <TextView
+                        android:id="@+id/nativeSignatureStatus"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="直接解析APK"
+                        android:textSize="11sp"
+                        android:textColor="@color/text_hint"
+                        android:layout_marginStart="8dp"/>
+
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/nativeSignatureTextView"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="获取中..."
+                    android:textSize="13sp"
+                    android:textColor="@color/text_primary"
+                    android:layout_marginTop="6dp"
+                    android:maxLines="3"
+                    android:ellipsize="middle"/>
+
+                <TextView
+                    android:id="@+id/nativeApkPath"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text=""
+                    android:textSize="11sp"
+                    android:textColor="@color/text_hint"
+                    android:layout_marginTop="4dp"
+                    android:maxLines="1"
+                    android:ellipsize="middle"/>
+
+            </LinearLayout>
+
+            <!-- Java层签名 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@color/java_bg"
+                android:padding="12dp"
+                android:layout_marginBottom="8dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="[Java PM]"
+                        android:textSize="12sp"
+                        android:textStyle="bold"
+                        android:textColor="@color/java_indicator"/>
+
+                    <TextView
+                        android:id="@+id/javaSignatureStatus"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="通过PackageManager"
+                        android:textSize="11sp"
+                        android:textColor="@color/text_hint"
+                        android:layout_marginStart="8dp"/>
+
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/javaSignatureTextView"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="获取中..."
+                    android:textSize="13sp"
+                    android:textColor="@color/text_primary"
+                    android:layout_marginTop="6dp"
+                    android:maxLines="3"
+                    android:ellipsize="middle"/>
+
+            </LinearLayout>
+
+            <!-- 签名对比结果 -->
+            <LinearLayout
+                android:id="@+id/signatureComparisonResult"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@color/status_neutral_bg"
+                android:padding="12dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:id="@+id/signatureMatchIcon"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="..."
+                        android:textSize="16sp"
+                        android:textStyle="bold"/>
+
+                    <TextView
+                        android:id="@+id/signatureMatchStatus"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="对比中..."
+                        android:textSize="14sp"
+                        android:textStyle="bold"
+                        android:layout_marginStart="8dp"/>
+
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/comparisonResultTextView"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text=""
+                    android:textSize="12sp"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginTop="6dp"/>
+
+            </LinearLayout>
+
+        </LinearLayout>
+
+        <!-- Xposed痕迹检测卡片 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@color/card_background"
+            android:padding="16dp"
+            android:layout_marginBottom="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Xposed框架检测"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:textColor="@color/primary"/>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider"
+                android:layout_marginTop="8dp"
+                android:layout_marginBottom="12dp"/>
+
+            <!-- Xposed检测汇总状态 -->
+            <LinearLayout
+                android:id="@+id/xposedOverallStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:background="@color/status_neutral_bg"
+                android:padding="12dp"
+                android:gravity="center_vertical"
+                android:layout_marginBottom="12dp">
+
+                <TextView
+                    android:id="@+id/xposedOverallIcon"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="..."
+                    android:textSize="20sp"
+                    android:textStyle="bold"/>
+
+                <TextView
+                    android:id="@+id/xposedOverallText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="检测中..."
+                    android:textSize="14sp"
+                    android:textColor="@color/text_primary"
+                    android:layout_marginStart="8dp"/>
+
+            </LinearLayout>
+
+            <!-- 检测项列表 -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="详细检测项:"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="@color/text_secondary"
+                android:layout_marginBottom="8dp"/>
+
+            <!-- 检测项1: 堆栈跟踪 -->
+            <LinearLayout
+                android:id="@+id/detectItemStackTrace"
+                style="@style/DetectItemStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:padding="8dp"
+                android:gravity="center_vertical"
+                android:background="@color/status_neutral_bg">
+
+                <TextView
+                    android:id="@+id/detectStackTraceIcon"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:text="..."
+                    android:textSize="14sp"
+                    android:gravity="center"/>
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="堆栈跟踪检测"
+                    android:textSize="13sp"
+                    android:textColor="@color/text_primary"
+                    android:layout_marginStart="8dp"/>
+
+                <TextView
+                    android:id="@+id/detectStackTraceStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="待检测"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_hint"/>
+
+            </LinearLayout>
+
+            <!-- 检测项2: 类加载 -->
+            <LinearLayout
+                android:id="@+id/detectItemClassLoader"
+                style="@style/DetectItemStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:padding="8dp"
+                android:gravity="center_vertical"
+                android:background="@color/status_neutral_bg"
+                android:layout_marginTop="4dp">
+
+                <TextView
+                    android:id="@+id/detectClassLoaderIcon"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:text="..."
+                    android:textSize="14sp"
+                    android:gravity="center"/>
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Xposed类加载检测"
+                    android:textSize="13sp"
+                    android:textColor="@color/text_primary"
+                    android:layout_marginStart="8dp"/>
+
+                <TextView
+                    android:id="@+id/detectClassLoaderStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="待检测"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_hint"/>
+
+            </LinearLayout>
+
+            <!-- 检测项3: 方法Hook -->
+            <LinearLayout
+                android:id="@+id/detectItemMethodHook"
+                style="@style/DetectItemStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:padding="8dp"
+                android:gravity="center_vertical"
+                android:background="@color/status_neutral_bg"
+                android:layout_marginTop="4dp">
+
+                <TextView
+                    android:id="@+id/detectMethodHookIcon"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:text="..."
+                    android:textSize="14sp"
+                    android:gravity="center"/>
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="方法Hook检测"
+                    android:textSize="13sp"
+                    android:textColor="@color/text_primary"
+                    android:layout_marginStart="8dp"/>
+
+                <TextView
+                    android:id="@+id/detectMethodHookStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="待检测"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_hint"/>
+
+            </LinearLayout>
+
+            <!-- 检测项4: 内存特征 -->
+            <LinearLayout
+                android:id="@+id/detectItemMemory"
+                style="@style/DetectItemStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:padding="8dp"
+                android:gravity="center_vertical"
+                android:background="@color/status_neutral_bg"
+                android:layout_marginTop="4dp">
+
+                <TextView
+                    android:id="@+id/detectMemoryIcon"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:text="..."
+                    android:textSize="14sp"
+                    android:gravity="center"/>
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="内存特征检测"
+                    android:textSize="13sp"
+                    android:textColor="@color/text_primary"
+                    android:layout_marginStart="8dp"/>
+
+                <TextView
+                    android:id="@+id/detectMemoryStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="待检测"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_hint"/>
+
+            </LinearLayout>
+
+            <!-- 检测项5: Native Hook -->
+            <LinearLayout
+                android:id="@+id/detectItemNativeHook"
+                style="@style/DetectItemStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:padding="8dp"
+                android:gravity="center_vertical"
+                android:background="@color/status_neutral_bg"
+                android:layout_marginTop="4dp">
+
+                <TextView
+                    android:id="@+id/detectNativeHookIcon"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:text="..."
+                    android:textSize="14sp"
+                    android:gravity="center"/>
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Native层Hook检测"
+                    android:textSize="13sp"
+                    android:textColor="@color/text_primary"
+                    android:layout_marginStart="8dp"/>
+
+                <TextView
+                    android:id="@+id/detectNativeHookStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="待检测"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_hint"/>
+
+            </LinearLayout>
+
+            <!-- 检测项6: 线程检测 -->
+            <LinearLayout
+                android:id="@+id/detectItemThreads"
+                style="@style/DetectItemStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:padding="8dp"
+                android:gravity="center_vertical"
+                android:background="@color/status_neutral_bg"
+                android:layout_marginTop="4dp">
+
+                <TextView
+                    android:id="@+id/detectThreadsIcon"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:text="..."
+                    android:textSize="14sp"
+                    android:gravity="center"/>
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="可疑线程检测"
+                    android:textSize="13sp"
+                    android:textColor="@color/text_primary"
+                    android:layout_marginStart="8dp"/>
+
+                <TextView
+                    android:id="@+id/detectThreadsStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="待检测"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_hint"/>
+
+            </LinearLayout>
+
+            <!-- 检测项7: 文件检测 -->
+            <LinearLayout
+                android:id="@+id/detectItemFiles"
+                style="@style/DetectItemStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:padding="8dp"
+                android:gravity="center_vertical"
+                android:background="@color/status_neutral_bg"
+                android:layout_marginTop="4dp">
+
+                <TextView
+                    android:id="@+id/detectFilesIcon"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:text="..."
+                    android:textSize="14sp"
+                    android:gravity="center"/>
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="可疑文件/路径检测"
+                    android:textSize="13sp"
+                    android:textColor="@color/text_primary"
+                    android:layout_marginStart="8dp"/>
+
+                <TextView
+                    android:id="@+id/detectFilesStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="待检测"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_hint"/>
+
+            </LinearLayout>
+
+            <!-- 检测项8: PM Hook -->
+            <LinearLayout
+                android:id="@+id/detectItemPmHook"
+                style="@style/DetectItemStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:padding="8dp"
+                android:gravity="center_vertical"
+                android:background="@color/status_neutral_bg"
+                android:layout_marginTop="4dp">
+
+                <TextView
+                    android:id="@+id/detectPmHookIcon"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:text="..."
+                    android:textSize="14sp"
+                    android:gravity="center"/>
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="PackageManager Hook"
+                    android:textSize="13sp"
+                    android:textColor="@color/text_primary"
+                    android:layout_marginStart="8dp"/>
+
+                <TextView
+                    android:id="@+id/detectPmHookStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="待检测"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_hint"/>
+
+            </LinearLayout>
+
+            <!-- 检测项9: NPatch框架 -->
+            <LinearLayout
+                android:id="@+id/detectItemNpatch"
+                style="@style/DetectItemStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:padding="8dp"
+                android:gravity="center_vertical"
+                android:background="@color/status_neutral_bg"
+                android:layout_marginTop="4dp">
+
+                <TextView
+                    android:id="@+id/detectNpatchIcon"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:text="..."
+                    android:textSize="14sp"
+                    android:gravity="center"/>
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="NPatch框架检测"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/text_primary"
+                    android:layout_marginStart="8dp"/>
+
+                <TextView
+                    android:id="@+id/detectNpatchStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="待检测"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_hint"/>
+
+            </LinearLayout>
+
+            <!-- 检测详情展开区域 -->
+            <TextView
+                android:id="@+id/xposedDetailReport"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textSize="12sp"
+                android:textColor="@color/text_secondary"
+                android:padding="8dp"
+                android:background="@color/status_neutral_bg"
+                android:layout_marginTop="12dp"
+                android:maxLines="10"/>
+
+        </LinearLayout>
+
+        <!-- 检测报告卡片 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@color/card_background"
+            android:padding="16dp"
+            android:layout_marginBottom="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="安全检测报告"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:textColor="@color/primary"/>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider"
+                android:layout_marginTop="8dp"
+                android:layout_marginBottom="12dp"/>
+
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="200dp"
+                android:background="@color/status_neutral_bg"
+                android:padding="8dp">
+
+                <TextView
+                    android:id="@+id/resultTextView"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textSize="12sp"
+                    android:textColor="@color/text_primary"/>
+
+            </ScrollView>
+
+        </LinearLayout>
+
+        <!-- 操作按钮区域 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <!-- 主刷新按钮 -->
+            <Button
+                android:id="@+id/refreshSignatureButton"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:text="执行全面安全检测"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:backgroundTint="@color/primary"
+                android:layout_marginBottom="8dp"/>
+
+            <!-- 辅助功能按钮行 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center">
+
+                <Button
+                    android:id="@+id/checkButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="签名验证"
+                    android:textSize="13sp"
+                    android:layout_marginEnd="4dp"/>
+
+                <Button
+                    android:id="@+id/reportButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="详细报告"
+                    android:textSize="13sp"
+                    android:layout_marginStart="4dp"/>
+
+                <Button
+                    android:id="@+id/signatureButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="获取签名"
+                    android:textSize="13sp"
+                    android:layout_marginStart="4dp"/>
+
+            </LinearLayout>
+
+            <!-- 原有状态显示（兼容） -->
+            <TextView
+                android:id="@+id/statusTextView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textSize="12sp"
+                android:textColor="@color/text_hint"
+                android:padding="8dp"
+                android:visibility="gone"/>
+
+        </LinearLayout>
 
     </LinearLayout>
 
-    <TextView
-        android:id="@+id/statusTextView"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="点击按钮进行安全检查"
-        android:textSize="16sp"
-        android:padding="16dp"
-        android:background="#E0E0E0"
-        android:layout_marginTop="16dp"/>
-
-    <ScrollView
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:layout_marginTop="16dp">
-
-        <TextView
-            android:id="@+id/resultTextView"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textSize="14sp"
-            android:padding="8dp"
-            android:background="#F5F5F5"/>
-
-    </ScrollView>
-
-</LinearLayout>
+</ScrollView>

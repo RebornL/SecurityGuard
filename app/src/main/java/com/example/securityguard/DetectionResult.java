@@ -1,7 +1,7 @@
 package com.example.securityguard;
 
 /**
- * Xposed检测结果类
+ * Xposed/NPatch检测结果类
  *
  * 包含各种检测方法的详细结果
  */
@@ -28,8 +28,14 @@ public class DetectionResult {
     // 文件检测结果
     public boolean filesFound;
 
+    // NPatch框架检测结果
+    public boolean npatchDetected;
+
     // 综合风险等级 (0-100)
     public int riskLevel;
+
+    // 检测到的框架类型
+    public String detectedFramework;
 
     /**
      * 默认构造函数
@@ -42,7 +48,9 @@ public class DetectionResult {
         nativeHooked = false;
         threadsFound = false;
         filesFound = false;
+        npatchDetected = false;
         riskLevel = 0;
+        detectedFramework = "";
     }
 
     /**
@@ -59,7 +67,29 @@ public class DetectionResult {
         this.nativeHooked = nativeHooked;
         this.threadsFound = threadsFound;
         this.filesFound = filesFound;
+        this.npatchDetected = false; // 默认值
         this.riskLevel = riskLevel;
+        this.detectedFramework = "";
+    }
+
+    /**
+     * 扩展构造函数（包含NPatch检测）
+     */
+    public DetectionResult(boolean stackTraceFound, boolean classFound,
+                          boolean methodHooked, boolean memoryPatterns,
+                          boolean nativeHooked, boolean threadsFound,
+                          boolean filesFound, boolean npatchDetected,
+                          int riskLevel, String detectedFramework) {
+        this.stackTraceFound = stackTraceFound;
+        this.classFound = classFound;
+        this.methodHooked = methodHooked;
+        this.memoryPatterns = memoryPatterns;
+        this.nativeHooked = nativeHooked;
+        this.threadsFound = threadsFound;
+        this.filesFound = filesFound;
+        this.npatchDetected = npatchDetected;
+        this.riskLevel = riskLevel;
+        this.detectedFramework = detectedFramework != null ? detectedFramework : "";
     }
 
     /**
@@ -68,7 +98,7 @@ public class DetectionResult {
      */
     public boolean hasAnyDetection() {
         return stackTraceFound || classFound || methodHooked ||
-               memoryPatterns || nativeHooked || threadsFound || filesFound;
+               memoryPatterns || nativeHooked || threadsFound || filesFound || npatchDetected;
     }
 
     /**
@@ -84,6 +114,7 @@ public class DetectionResult {
         if (nativeHooked) count++;
         if (threadsFound) count++;
         if (filesFound) count++;
+        if (npatchDetected) count++;
         return count;
     }
 
@@ -105,6 +136,36 @@ public class DetectionResult {
         }
     }
 
+    /**
+     * 获取检测到的框架类型描述
+     * @return 检测到的框架类型
+     */
+    public String getDetectedFrameworkDescription() {
+        if (npatchDetected) {
+            return "NPatch框架";
+        }
+        if (hasAnyDetection()) {
+            return "Xposed/LSPosed框架";
+        }
+        return "未检测到";
+    }
+
+    /**
+     * 判断是否检测到NPatch框架
+     * @return 是否检测到NPatch
+     */
+    public boolean isNpatchDetected() {
+        return npatchDetected;
+    }
+
+    /**
+     * 判断是否检测到Xposed框架（不包括NPatch）
+     * @return 是否检测到Xposed
+     */
+    public boolean isXposedDetected() {
+        return hasAnyDetection() && !npatchDetected;
+    }
+
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder();
@@ -116,8 +177,10 @@ public class DetectionResult {
         sb.append("  nativeHooked: ").append(nativeHooked).append("\n");
         sb.append("  threadsFound: ").append(threadsFound).append("\n");
         sb.append("  filesFound: ").append(filesFound).append("\n");
+        sb.append("  npatchDetected: ").append(npatchDetected).append("\n");
         sb.append("  riskLevel: ").append(riskLevel).append(" (").append(getRiskLevelDescription()).append(")\n");
-        sb.append("  detectionCount: ").append(getDetectionCount()).append("\n");
+        sb.append("  detectionCount: ").append(getDetectionCount()).append("/8\n");
+        sb.append("  detectedFramework: ").append(getDetectedFrameworkDescription()).append("\n");
         sb.append("}");
         return sb.toString();
     }

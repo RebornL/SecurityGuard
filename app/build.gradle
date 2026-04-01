@@ -27,6 +27,31 @@ android {
         }
     }
 
+    // 签名配置
+    signingConfigs {
+        debug {
+            // Debug签名使用默认debug keystore
+            // V1签名方案 (JAR Signature)
+            v1SigningEnabled true
+            // V2签名方案 (APK Signature Scheme v2) - Android 7.0+
+            v2SigningEnabled true
+        }
+        release {
+            // Release签名配置
+            // 在实际发布时，请替换为您的正式签名密钥
+            // 可以通过以下方式配置：
+            // storeFile file("your-keystore.jks")
+            // storePassword "your-store-password"
+            // keyAlias "your-key-alias"
+            // keyPassword "your-key-password"
+
+            // 启用V1签名（兼容Android 7.0以下）
+            v1SigningEnabled true
+            // 启用V2签名（Android 7.0+推荐）
+            v2SigningEnabled true
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled true
@@ -35,6 +60,9 @@ android {
 
             // 禁用调试
             debuggable false
+
+            // 使用release签名
+            signingConfig signingConfigs.release
 
             // Native库优化
             ndk {
@@ -45,6 +73,8 @@ android {
         debug {
             minifyEnabled false
             debuggable true
+            // 使用debug签名
+            signingConfig signingConfigs.debug
         }
     }
 
@@ -61,6 +91,7 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+    buildToolsVersion '34.0.0'
 }
 
 dependencies {

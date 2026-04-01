@@ -2,6 +2,7 @@
  * APK签名解析器实现
  *
  * 直接在Native层解析APK文件获取签名，绕过Java层PackageManager
+ * 仅支持 APK Signature Scheme V2/V3 (不支持 V1/JAR 签名)
  */
 
 #include "apk_parser.h"
@@ -10,6 +11,8 @@
 #include <cstring>
 #include <algorithm>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <unistd.h>
 
 #ifdef USE_FALLBACK_HASH
 #include "sha256_fallback.h"
@@ -19,67 +22,202 @@
 
 namespace security {
 
-// ==================== ApkSignatureParser实现 ====================
+// ==================== 辅助函数 ====================
 
-std::string ApkSignatureParser::getSelfApkPath() {
-    // 方法1: 从/proc/self/exe获取（某些情况下可行）
-    // 方法2: 解析/proc/self/cmdline获取包名，然后查找APK路径
+/**
+ * 安全读取文件内容
+ */
+static std::vector<uint8_t> safeReadFile(const std::string& path, size_t maxSize = 100 * 1024 * 1024) {
+    std::vector<uint8_t> content;
 
-    char cmdline[256] = {0};
-    FILE* cmdlineFile = fopen("/proc/self/cmdline", "r");
-    if (cmdlineFile) {
-        fgets(cmdline, sizeof(cmdline), cmdlineFile);
-        fclose(cmdlineFile);
+    if (path.empty()) {
+        LOGE("File path is empty");
+        return content;
     }
 
-    // 根据包名构建APK路径
-    std::string packageName(cmdline);
-    if (!packageName.empty()) {
-        // 常见APK路径
+    FILE* file = fopen(path.c_str(), "rb");
+    if (!file) {
+        LOGE("Failed to open file: %s (errno: %d)", path.c_str(), errno);
+        return content;
+    }
+
+    // 获取文件大小
+    fseek(file, 0, SEEK_END);
+    long fileSize = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    if (fileSize <= 0 || fileSize > (long)maxSize) {
+        LOGE("Invalid file size: %ld (max: %zu)", fileSize, maxSize);
+        fclose(file);
+        return content;
+    }
+
+    content.resize(fileSize);
+    size_t bytesRead = fread(content.data(), 1, fileSize, file);
+    fclose(file);
+
+    if (bytesRead != (size_t)fileSize) {
+        LOGE("Read mismatch: expected %ld, got %zu", fileSize, bytesRead);
+        content.clear();
+        return content;
+    }
+
+    LOGI("Successfully read %zu bytes from %s", bytesRead, path.c_str());
+    return content;
+}
+
+/**
+ * 小端序读取 uint16
+ */
+static inline uint16_t readU16(const uint8_t* data, size_t offset) {
+    return data[offset] | (data[offset + 1] << 8);
+}
+
+/**
+ * 小端序读取 uint32
+ */
+static inline uint32_t readU32(const uint8_t* data, size_t offset) {
+    return data[offset] | (data[offset + 1] << 8) |
+           (data[offset + 2] << 16) | (data[offset + 3] << 24);
+}
+
+// ==================== ApkSignatureParser实现 ====================
+
+std::string ApkSignatureParser::getApkPathFromContext(JNIEnv* env, jobject context) {
+    if (!env || !context) {
+        LOGE("Invalid parameters for getApkPathFromContext");
+        return "";
+    }
+
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    }
+
+    try {
+        jclass contextClass = env->GetObjectClass(context);
+        if (!contextClass) {
+            LOGE("Failed to get context class");
+            return "";
+        }
+
+        // 方法1: 直接获取 sourceDir
+        jmethodID getApplicationInfo = env->GetMethodID(contextClass, "getApplicationInfo",
+                                                         "()Landroid/content/pm/ApplicationInfo;");
+        if (!getApplicationInfo) {
+            env->DeleteLocalRef(contextClass);
+            return "";
+        }
+
+        jobject applicationInfo = env->CallObjectMethod(context, getApplicationInfo);
+        if (!applicationInfo) {
+            env->DeleteLocalRef(contextClass);
+            return "";
+        }
+
+        jclass appInfoClass = env->GetObjectClass(applicationInfo);
+        jfieldID sourceDirField = env->GetFieldID(appInfoClass, "sourceDir", "Ljava/lang/String;");
+
+        if (sourceDirField) {
+            jstring sourceDir = (jstring)env->GetObjectField(applicationInfo, sourceDirField);
+            if (sourceDir) {
+                const char* pathStr = env->GetStringUTFChars(sourceDir, nullptr);
+                std::string apkPath(pathStr);
+                env->ReleaseStringUTFChars(sourceDir, pathStr);
+
+                env->DeleteLocalRef(sourceDir);
+                env->DeleteLocalRef(appInfoClass);
+                env->DeleteLocalRef(applicationInfo);
+                env->DeleteLocalRef(contextClass);
+
+                if (!apkPath.empty()) {
+                    LOGI("Got APK path from Context: %s", apkPath.c_str());
+                    return apkPath;
+                }
+            }
+        }
+
+        env->DeleteLocalRef(appInfoClass);
+        env->DeleteLocalRef(applicationInfo);
+        env->DeleteLocalRef(contextClass);
+
+    } catch (...) {
+        LOGE("Exception in getApkPathFromContext");
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+        }
+    }
+
+    return "";
+}
+
+std::string ApkSignatureParser::getSelfApkPath() {
+    // 方法1: 读取 /proc/self/cmdline 获取包名
+    char packageName[256] = {0};
+    FILE* cmdline = fopen("/proc/self/cmdline", "r");
+    if (cmdline) {
+        fgets(packageName, sizeof(packageName), cmdline);
+        fclose(cmdline);
+    }
+
+    std::string pkgName(packageName);
+    // 去除尾部空白
+    while (!pkgName.empty() && (pkgName.back() == '\n' || pkgName.back() == '\r' || pkgName.back() == ' ')) {
+        pkgName.pop_back();
+    }
+
+    LOGI("Package name from cmdline: %s", pkgName.c_str());
+
+    if (!pkgName.empty()) {
+        // 方法2: 搜索 /data/app 目录
+        DIR* appDir = opendir("/data/app");
+        if (appDir) {
+            struct dirent* entry;
+            while ((entry = readdir(appDir)) != nullptr) {
+                std::string dirName(entry->d_name);
+
+                // 检查目录名是否包含包名
+                if (dirName.find(pkgName) != std::string::npos) {
+                    std::string basePath = std::string("/data/app/") + dirName;
+
+                    // 检查 base.apk
+                    std::string apkPath = basePath + "/base.apk";
+                    struct stat st;
+                    if (stat(apkPath.c_str(), &st) == 0) {
+                        closedir(appDir);
+                        LOGI("Found APK: %s", apkPath.c_str());
+                        return apkPath;
+                    }
+                }
+            }
+            closedir(appDir);
+        }
+
+        // 方法3: 尝试常见路径格式
         std::vector<std::string> possiblePaths = {
-            "/data/app/" + packageName + "-1/base.apk",
-            "/data/app/" + packageName + "-2/base.apk",
-            "/data/app/" + packageName + "/base.apk",
-            "/data/app/" + packageName + "-1.apk",
-            "/data/app/" + packageName + "-2.apk",
-            "/data/app/" + packageName + ".apk",
-            "/data/app-private/" + packageName + ".apk",
-            "/system/app/" + packageName + ".apk",
-            "/system/priv-app/" + packageName + ".apk"
+            "/data/app/" + pkgName + "/base.apk",
+            "/data/app/" + pkgName + "-1/base.apk",
+            "/data/app/" + pkgName + "-2/base.apk",
+            "/data/app/" + pkgName + ".apk",
+            "/data/app-private/" + pkgName + ".apk",
+            "/system/app/" + pkgName + "/" + pkgName + ".apk",
+            "/system/priv-app/" + pkgName + "/" + pkgName + ".apk",
         };
 
         for (const auto& path : possiblePaths) {
             struct stat st;
             if (stat(path.c_str(), &st) == 0) {
-                LOGI("Found APK path: %s", path.c_str());
+                LOGI("Found APK at fallback path: %s", path.c_str());
                 return path;
             }
         }
     }
-
-    // 尝试从环境变量获取（测试时可能可用）
-    // 或从maps文件解析
 
     LOGE("Failed to find APK path");
     return "";
 }
 
 std::vector<uint8_t> ApkSignatureParser::readFileContent(const std::string& path) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file.is_open()) {
-        LOGE("Failed to open file: %s", path.c_str());
-        return {};
-    }
-
-    file.seekg(0, std::ios::end);
-    size_t size = file.tellg();
-    file.seekg(0, std::ios::beg);
-
-    std::vector<uint8_t> content(size);
-    file.read(reinterpret_cast<char*>(content.data()), size);
-    file.close();
-
-    return content;
+    return safeReadFile(path);
 }
 
 std::string ApkSignatureParser::bytesToHex(const std::vector<uint8_t>& bytes) {
@@ -103,355 +241,290 @@ std::string ApkSignatureParser::sha256Hash(const std::vector<uint8_t>& data) {
 #endif
 }
 
+/**
+ * 查找 ZIP End of Central Directory
+ */
+static size_t findEocd(const std::vector<uint8_t>& apkData) {
+    size_t fileSize = apkData.size();
+
+    // EOCD 最小22字节，最大可以有65535字节的注释
+    size_t searchStart = fileSize > 65557 ? fileSize - 65557 : 0;
+    if (searchStart < 22) searchStart = 0;
+    else searchStart = fileSize - 22;
+
+    // 从后向前搜索
+    for (size_t i = fileSize - 22; i >= searchStart && i > 0; i--) {
+        if (apkData[i] == 0x50 && apkData[i+1] == 0x4b &&
+            apkData[i+2] == 0x05 && apkData[i+3] == 0x06) {
+            LOGI("Found EOCD at offset: %zu", i);
+            return i;
+        }
+    }
+
+    // 检查开头
+    if (apkData.size() >= 22 &&
+        apkData[0] == 0x50 && apkData[1] == 0x4b &&
+        apkData[2] == 0x05 && apkData[3] == 0x06) {
+        LOGI("Found EOCD at offset: 0");
+        return 0;
+    }
+
+    LOGE("EOCD not found");
+    return 0;
+}
+
+/**
+ * 解析 APK Signing Block (V2/V3签名)
+ */
+static bool parseApkSigningBlock(const std::vector<uint8_t>& apkData, size_t cdOffset,
+                                  std::vector<uint8_t>& signatureData) {
+    // APK Signing Block 位于 Central Directory 之前
+    // 格式: size(4) + data + size(4) + magic(16)
+
+    if (cdOffset < 32) {
+        LOGE("Central Directory offset too small: %zu", cdOffset);
+        return false;
+    }
+
+    // 检查 magic (APK Sig Block 42)
+    size_t magicOffset = cdOffset - 16;
+    const uint8_t* magic = &apkData[magicOffset];
+
+    // Magic: "APK Sig Block 42" in little endian
+    const uint8_t expectedMagic[] = {
+        0x41, 0x50, 0x4b, 0x20, 0x53, 0x69, 0x67, 0x20,
+        0x42, 0x6c, 0x6f, 0x63, 0x6b, 0x20, 0x34, 0x32
+    };
+
+    if (memcmp(magic, expectedMagic, 16) != 0) {
+        LOGE("APK Signing Block magic mismatch");
+        return false;
+    }
+
+    LOGI("Found APK Signing Block");
+
+    // 读取 block size
+    size_t blockSizeOffset = cdOffset - 24;
+    uint32_t blockSize = readU32(apkData.data(), blockSizeOffset);
+
+    LOGI("APK Signing Block size: %u", blockSize);
+
+    if (blockSize == 0 || blockSize > cdOffset) {
+        LOGE("Invalid block size");
+        return false;
+    }
+
+    // 解析 key-value pairs
+    size_t blockStart = cdOffset - blockSize - 8;
+    size_t pos = blockStart;
+
+    while (pos < cdOffset - 24) {
+        if (pos + 8 > cdOffset - 24) break;
+
+        uint32_t pairSize = readU32(apkData.data(), pos);
+        pos += 4;
+
+        if (pos + 4 > cdOffset - 24) break;
+
+        uint32_t pairId = readU32(apkData.data(), pos);
+        pos += 4;
+
+        LOGD("Signing Block Pair ID: 0x%08x, size: %u", pairId, pairSize);
+
+        // V2签名块ID: 0x7109871a
+        // V3签名块ID: 0xf05368c0
+        if (pairId == 0x7109871a || pairId == 0xf05368c0) {
+            size_t dataSize = pairSize - 4;
+            if (pos + dataSize <= apkData.size()) {
+                signatureData.assign(apkData.begin() + pos, apkData.begin() + pos + dataSize);
+                LOGI("Extracted signature block (ID: 0x%08x), size: %zu", pairId, signatureData.size());
+                return true;
+            }
+        }
+
+        pos += pairSize - 4;
+    }
+
+    LOGE("No V2/V3 signature block found");
+    return false;
+}
+
+/**
+ * 从 V2/V3 签名块中提取证书
+ */
+static bool extractCertificateFromV2Block(const std::vector<uint8_t>& block,
+                                           std::vector<uint8_t>& certificate) {
+    if (block.size() < 12) {
+        LOGE("Block too small: %zu", block.size());
+        return false;
+    }
+
+    size_t pos = 0;
+
+    // signers 数组大小
+    uint32_t signersSize = readU32(block.data(), pos);
+    pos += 4;
+    LOGD("Signers size: %u", signersSize);
+
+    if (pos + 4 > block.size()) return false;
+
+    // 第一个 signer 的大小
+    uint32_t signerSize = readU32(block.data(), pos);
+    pos += 4;
+    LOGD("Signer size: %u", signerSize);
+
+    if (pos + 4 > block.size()) return false;
+
+    // signedData 大小
+    uint32_t signedDataSize = readU32(block.data(), pos);
+    size_t signedDataStart = pos;
+    pos += 4;
+    LOGD("SignedData size: %u", signedDataSize);
+
+    // 解析 signedData 内部结构
+    // signedData: digests + certificates + additionalAttributes
+
+    if (pos + 4 > block.size()) return false;
+
+    // digests 数组大小
+    uint32_t digestsSize = readU32(block.data(), pos);
+    pos += 4 + digestsSize;
+    LOGD("Digests size: %u", digestsSize);
+
+    if (pos + 4 > block.size()) return false;
+
+    // certificates 数组大小
+    uint32_t certsSize = readU32(block.data(), pos);
+    pos += 4;
+    LOGD("Certificates array size: %u", certsSize);
+
+    if (pos + 4 > block.size()) return false;
+
+    // 第一个 certificate 大小
+    uint32_t certSize = readU32(block.data(), pos);
+    pos += 4;
+    LOGD("Certificate size: %u", certSize);
+
+    if (pos + certSize > block.size()) {
+        LOGE("Certificate data exceeds block size");
+        return false;
+    }
+
+    certificate.assign(block.begin() + pos, block.begin() + pos + certSize);
+    LOGI("Extracted certificate, size: %zu", certificate.size());
+    return true;
+}
+
 bool ApkSignatureParser::findSignatureBlock(const std::string& apkPath,
                                              std::vector<uint8_t>& signatureBlock) {
     std::vector<uint8_t> apkData = readFileContent(apkPath);
     if (apkData.empty()) {
-        LOGE("Failed to read APK data");
+        LOGE("Failed to read APK: %s", apkPath.c_str());
         return false;
     }
 
-    size_t fileSize = apkData.size();
+    LOGI("APK size: %zu bytes", apkData.size());
 
-    // 首先尝试解析APK Signature Scheme V2/V3
-    // APK Signing Block位于ZIP Central Directory之前
-
-    // 查找ZIP End of Central Directory (EOCD)
-    // EOCD签名: 0x06054b50
-    size_t eocdOffset = 0;
-    for (size_t i = fileSize - 22; i >= 0 && i > fileSize - 65557; i--) {
-        if (apkData[i] == 0x50 && apkData[i+1] == 0x4b &&
-            apkData[i+2] == 0x05 && apkData[i+3] == 0x06) {
-            eocdOffset = i;
-            break;
+    // Step 1: 查找 EOCD
+    size_t eocdOffset = findEocd(apkData);
+    if (eocdOffset == 0 && apkData.size() >= 22) {
+        // 可能文件开头就是EOCD（空ZIP）
+        if (!(apkData[0] == 0x50 && apkData[1] == 0x4b &&
+              apkData[2] == 0x05 && apkData[3] == 0x06)) {
+            LOGE("Failed to find EOCD - no V2 signature available");
+            return false;
         }
     }
 
-    if (eocdOffset == 0) {
-        LOGE("Failed to find EOCD in APK");
-        // 回退到V1签名方案（META-INF目录）
-        return parseZipFile(apkPath, signatureBlock);
-    }
-
-    // 从EOCD获取Central Directory的偏移量
-    // EOCD结构: 4字节签名 + ... + 4字节CD偏移量(从第16字节开始)
+    // Step 2: 获取 Central Directory 偏移
     uint32_t cdOffset = 0;
-    if (eocdOffset + 16 + 4 <= fileSize) {
-        cdOffset = apkData[eocdOffset + 16] |
-                   (apkData[eocdOffset + 17] << 8) |
-                   (apkData[eocdOffset + 18] << 16) |
-                   (apkData[eocdOffset + 19] << 24);
+    if (eocdOffset + 16 + 4 <= apkData.size()) {
+        cdOffset = readU32(apkData.data(), eocdOffset + 16);
     }
 
-    LOGD("EOCD offset: %zu, CD offset: %u", eocdOffset, cdOffset);
+    LOGI("Central Directory offset: %u", cdOffset);
 
-    // 检查是否存在APK Signing Block
-    // APK Signing Block紧接在Central Directory之前
-    // 结尾有16字节的magic: "APK Sig Block 42" (实际上是小端的数字)
-
-    if (cdOffset >= 24) {
-        // 检查APK Signing Block Magic
-        size_t magicOffset = cdOffset - 24;
-        uint32_t magicLo = apkData[magicOffset] |
-                           (apkData[magicOffset + 1] << 8) |
-                           (apkData[magicOffset + 2] << 16) |
-                           (apkData[magicOffset + 3] << 24);
-        uint32_t magicHi = apkData[magicOffset + 4] |
-                           (apkData[magicOffset + 5] << 8) |
-                           (apkData[magicOffset + 6] << 16) |
-                           (apkData[magicOffset + 7] << 24);
-
-        if (magicLo == APK_SIG_BLOCK_MAGIC_LO && magicHi == APK_SIG_BLOCK_MAGIC_HI) {
-            LOGI("Found APK Signing Block V2/V3");
-
-            // 读取APK Signing Block大小
-            size_t blockSizeOffset = cdOffset - 8;
-            uint32_t blockSize = apkData[blockSizeOffset] |
-                                 (apkData[blockSizeOffset + 1] << 8) |
-                                 (apkData[blockSizeOffset + 2] << 16) |
-                                 (apkData[blockSizeOffset + 3] << 24);
-
-            if (blockSize > 0 && cdOffset >= blockSize + 8) {
-                // 解析Signing Block中的key-value对
-                size_t blockStart = cdOffset - blockSize - 8;
-                size_t pos = blockStart;
-
-                while (pos < cdOffset - 24) {
-                    uint32_t pairSize = apkData[pos] |
-                                       (apkData[pos + 1] << 8) |
-                                       (apkData[pos + 2] << 16) |
-                                       (apkData[pos + 3] << 24);
-                    pos += 4;
-
-                    if (pos + 4 > cdOffset - 24) break;
-
-                    uint32_t pairId = apkData[pos] |
-                                     (apkData[pos + 1] << 8) |
-                                     (apkData[pos + 2] << 16) |
-                                     (apkData[pos + 3] << 24);
-                    pos += 4;
-
-                    if (pairId == APK_SIG_BLOCK_ID_V2 || pairId == APK_SIG_BLOCK_ID_V3) {
-                        // 提取签名块数据
-                        uint32_t signersSize = apkData[pos] |
-                                              (apkData[pos + 1] << 8) |
-                                              (apkData[pos + 2] << 16) |
-                                              (apkData[pos + 3] << 24);
-                        pos += 4;
-
-                        // 解析signers
-                        // 这里简化处理，直接提取整个块
-                        signatureBlock.clear();
-                        for (uint32_t i = 0; i < pairSize - 4 && pos + i < fileSize; i++) {
-                            signatureBlock.push_back(apkData[pos + i]);
-                        }
-
-                        LOGI("Extracted signature block, size: %zu", signatureBlock.size());
-                        return true;
-                    }
-
-                    pos += pairSize - 4;  // 跳过value部分
-                }
-            }
-        }
+    // Step 3: 解析 APK Signing Block (V2/V3 only)
+    if (cdOffset < 32) {
+        LOGE("No APK Signing Block found (APK may only have V1 signature)");
+        return false;
     }
 
-    // V2/V3签名块未找到，尝试V1签名（META-INF）
-    LOGI("V2/V3 signing block not found, trying V1 signature");
-    return parseZipFile(apkPath, signatureBlock);
+    std::vector<uint8_t> signingBlockData;
+    if (!parseApkSigningBlock(apkData, cdOffset, signingBlockData)) {
+        LOGE("Failed to parse APK Signing Block");
+        return false;
+    }
+
+    if (!extractCertificateFromV2Block(signingBlockData, signatureBlock)) {
+        LOGE("Failed to extract certificate from V2/V3 block");
+        return false;
+    }
+
+    LOGI("Successfully extracted V2/V3 signature");
+    return true;
 }
 
 bool ApkSignatureParser::parseZipFile(const std::string& apkPath,
                                        std::vector<uint8_t>& certData) {
-    std::vector<uint8_t> apkData = readFileContent(apkPath);
-    if (apkData.empty()) return false;
-
-    size_t fileSize = apkData.size();
-    size_t pos = 0;
-
-    // 遍历ZIP文件中的Local File Header
-    while (pos < fileSize) {
-        // 检查Local File Header签名
-        if (pos + 30 > fileSize) break;
-
-        uint32_t sig = apkData[pos] |
-                      (apkData[pos + 1] << 8) |
-                      (apkData[pos + 2] << 16) |
-                      (apkData[pos + 3] << 24);
-
-        if (sig != ZIP_LOCAL_FILE_HEADER_SIG) break;
-
-        // 解析Local File Header
-        uint16_t nameLen = apkData[pos + 26] | (apkData[pos + 27] << 8);
-        uint16_t extraLen = apkData[pos + 28] | (apkData[pos + 29] << 8);
-        uint32_t compressedSize = apkData[pos + 18] |
-                                 (apkData[pos + 19] << 8) |
-                                 (apkData[pos + 20] << 16) |
-                                 (apkData[pos + 21] << 24);
-
-        // 获取文件名
-        std::string fileName(reinterpret_cast<const char*>(apkData.data() + pos + 30), nameLen);
-
-        // 查找META-INF/CERT.RSA 或 CERT.DSA
-        if (fileName.find("META-INF/") != std::string::npos &&
-            (fileName.find(".RSA") != std::string::npos ||
-             fileName.find(".DSA") != std::string::npos ||
-             fileName.find(".EC") != std::string::npos)) {
-
-            LOGI("Found signature file: %s", fileName.c_str());
-
-            // 提取文件内容
-            size_t dataStart = pos + 30 + nameLen + extraLen;
-            certData.clear();
-            for (uint32_t i = 0; i < compressedSize && dataStart + i < fileSize; i++) {
-                certData.push_back(apkData[dataStart + i]);
-            }
-
-            return parsePkcs7Signature(certData, certData);
-        }
-
-        // 移动到下一个文件
-        pos += 30 + nameLen + extraLen + compressedSize;
-    }
-
-    LOGE("No signature file found in META-INF");
-    return false;
+    return findSignatureBlock(apkPath, certData);
 }
 
 bool ApkSignatureParser::parsePkcs7Signature(const std::vector<uint8_t>& data,
                                               std::vector<uint8_t>& certificate) {
-    // 简化的PKCS7解析
-    // 实际PKCS7格式较复杂，这里提取其中的证书部分
-
-    // PKCS7 SignedData结构包含证书
-    // 我们需要找到并提取X.509证书
-
-    // 查找证书的OID和内容
-    // X.509证书通常以特定的ASN.1序列开始
-
-    for (size_t i = 0; i < data.size() - 10; i++) {
-        // 查找证书序列标记 (0x30 0x82 或类似的)
-        if (data[i] == 0x30 && data[i+1] >= 0x81 && data[i+1] <= 0x84) {
-            // 可能是证书的开始
-            // 需要进一步验证
-
-            // 简化处理：假设找到的就是证书数据
-            // 实际实现需要完整的ASN.1解析
-
-            size_t certStart = i;
-            size_t certLen = 0;
-
-            if (data[i+1] == 0x82) {
-                certLen = (data[i+2] << 8) | data[i+3];
-                certLen += 4;  // 包括tag和length
-            } else if (data[i+1] == 0x81) {
-                certLen = data[i+2];
-                certLen += 3;
-            } else {
-                certLen = data[i+1];
-                certLen += 2;
-            }
-
-            if (certStart + certLen <= data.size()) {
-                certificate.clear();
-                for (size_t j = certStart; j < certStart + certLen; j++) {
-                    certificate.push_back(data[j]);
-                }
-                LOGI("Extracted certificate, size: %zu", certificate.size());
-                return true;
-            }
-        }
-    }
-
-    LOGE("Failed to parse PKCS7 signature");
-    return false;
+    // V1签名已移除，此函数仅用于兼容性保留
+    certificate = data;
+    return !certificate.empty();
 }
 
 bool ApkSignatureParser::parseDerCertificate(const std::vector<uint8_t>& certData,
                                               std::vector<uint8_t>& publicKey) {
-    // 解析DER编码的X.509证书，提取公钥
-    // 证书结构：Certificate ::= SEQUENCE { TBSCertificate, signatureAlgorithm, signatureValue }
-    // TBSCertificate中包含subjectPublicKeyInfo
-
-    // 简化实现：直接提取证书数据计算哈希
-    // 完整实现需要ASN.1解析提取公钥
-
-    publicKey = certData;  // 使用整个证书作为数据源
+    publicKey = certData;
     return true;
 }
 
 std::vector<uint8_t> ApkSignatureParser::extractSignatureCertificate(const std::string& apkPath) {
     std::vector<uint8_t> signatureBlock;
     if (!findSignatureBlock(apkPath, signatureBlock)) {
+        LOGE("Failed to find signature block in: %s", apkPath.c_str());
         return {};
     }
-
-    std::vector<uint8_t> certificate;
-    // 尝试解析V2/V3签名
-    if (parseApkSignatureSchemeV2(signatureBlock, certificate) ||
-        parseApkSignatureSchemeV3(signatureBlock, certificate)) {
-        return certificate;
-    }
-
-    // 回退到PKCS7/V1
-    if (parsePkcs7Signature(signatureBlock, certificate)) {
-        return certificate;
-    }
-
-    return {};
+    return signatureBlock;
 }
 
 bool ApkSignatureParser::parseApkSignatureSchemeV2(const std::vector<uint8_t>& block,
                                                     std::vector<uint8_t>& certificate) {
-    // APK Signature Scheme V2结构:
-    // - signers: sequence of signer
-    // - signer: signedData, signatures, publicKey
-
-    if (block.size() < 4) return false;
-
-    size_t pos = 0;
-
-    // signers数组大小
-    uint32_t signersSize = block[pos] |
-                          (block[pos + 1] << 8) |
-                          (block[pos + 2] << 16) |
-                          (block[pos + 3] << 24);
-    pos += 4;
-
-    // 解析第一个signer
-    if (pos + 4 > block.size()) return false;
-
-    uint32_t signerSize = block[pos] |
-                         (block[pos + 1] << 8) |
-                         (block[pos + 2] << 16) |
-                         (block[pos + 3] << 24);
-    pos += 4;
-
-    // signedData
-    if (pos + 4 > block.size()) return false;
-    uint32_t signedDataSize = block[pos] |
-                             (block[pos + 1] << 8) |
-                             (block[pos + 2] << 16) |
-                             (block[pos + 3] << 24);
-    pos += 4;
-
-    // 跳过signedData中的digests
-    if (pos + 4 > block.size()) return false;
-    uint32_t digestsSize = block[pos] |
-                          (block[pos + 1] << 8) |
-                          (block[pos + 2] << 16) |
-                          (block[pos + 3] << 24);
-    pos += 4 + digestsSize;
-
-    // 跳过certificates
-    if (pos + 4 > block.size()) return false;
-    uint32_t certsSize = block[pos] |
-                        (block[pos + 1] << 8) |
-                        (block[pos + 2] << 16) |
-                        (block[pos + 3] << 24);
-    pos += 4;
-
-    // 提取第一个certificate
-    if (pos + 4 > block.size()) return false;
-    uint32_t certSize = block[pos] |
-                       (block[pos + 1] << 8) |
-                       (block[pos + 2] << 16) |
-                       (block[pos + 3] << 24);
-    pos += 4;
-
-    if (pos + certSize > block.size()) return false;
-
-    certificate.clear();
-    for (uint32_t i = 0; i < certSize; i++) {
-        certificate.push_back(block[pos + i]);
-    }
-
-    LOGI("V2 certificate extracted, size: %zu", certificate.size());
-    return true;
+    return extractCertificateFromV2Block(block, certificate);
 }
 
 bool ApkSignatureParser::parseApkSignatureSchemeV3(const std::vector<uint8_t>& block,
                                                     std::vector<uint8_t>& certificate) {
-    // V3结构与V2类似，包含额外的minSdkVersion等字段
-    // 使用相同的解析逻辑
-    return parseApkSignatureSchemeV2(block, certificate);
+    return extractCertificateFromV2Block(block, certificate);
 }
 
 std::string ApkSignatureParser::getSignatureFromApk(const std::string& apkPath) {
+    if (apkPath.empty()) {
+        LOGE("APK path is empty");
+        return "";
+    }
+
+    // 检查文件是否存在
+    struct stat st;
+    if (stat(apkPath.c_str(), &st) != 0) {
+        LOGE("APK file not found: %s (errno: %d)", apkPath.c_str(), errno);
+        return "";
+    }
+
+    LOGI("Parsing APK: %s", apkPath.c_str());
+
     std::vector<uint8_t> certificate = extractSignatureCertificate(apkPath);
     if (certificate.empty()) {
-        LOGE("Failed to extract certificate from APK");
+        LOGE("Failed to extract certificate from APK: %s", apkPath.c_str());
         return "";
     }
 
-    std::vector<uint8_t> publicKey;
-    if (!parseDerCertificate(certificate, publicKey)) {
-        LOGE("Failed to parse certificate");
-        return "";
-    }
-
-    // 计算证书/公钥的SHA-256哈希
-    std::string hash = sha256Hash(publicKey);
+    // 计算证书的 SHA-256 哈希
+    std::string hash = sha256Hash(certificate);
     LOGI("Direct APK signature hash: %s", hash.c_str());
     return hash;
 }
@@ -483,28 +556,18 @@ bool SecureSignatureVerifier::verifySignatureSecure(JNIEnv* env, jobject context
                                                      const std::string& expectedSignature) {
     VerificationResult result = getDetailedResult(env, context, expectedSignature);
 
-    // 关键判断逻辑：
-    // 1. 如果两个签名不一致，说明PackageManager可能被Hook
-    // 2. 只信任直接解析APK的结果（因为它不经过Java层）
-    // 3. 如果直接解析失败，则拒绝通过（安全优先）
-
     if (!result.signaturesMatch) {
         LOGE("SECURITY WARNING: Signature mismatch detected!");
         LOGE("APK direct: %s", result.apkDirectSignature.c_str());
         LOGE("PM result:  %s", result.pmSignature.c_str());
-        LOGE("This may indicate PackageManager is hooked by Xposed!");
     }
 
-    // 只使用直接解析APK的结果进行验证
-    // 因为这个方法不经过可能被Hook的Java层
     return result.apkSignatureValid;
 }
 
 bool SecureSignatureVerifier::detectPackageManagerHook(JNIEnv* env, jobject context) {
     VerificationResult result = getDetailedResult(env, context, "");
 
-    // 如果直接解析APK成功，但与PackageManager结果不一致
-    // 说明PackageManager可能被Hook
     if (!result.apkDirectSignature.empty() &&
         !result.pmSignature.empty() &&
         !result.signaturesMatch) {
@@ -520,16 +583,34 @@ SecureSignatureVerifier::VerificationResult SecureSignatureVerifier::getDetailed
 
     VerificationResult result;
 
-    // 方法1: 直接解析APK文件（不经过Java层，无法被Xposed Hook）
-    std::string apkPath = ApkSignatureParser::getSelfApkPath();
-    if (!apkPath.empty()) {
-        result.apkDirectSignature = ApkSignatureParser::getSignatureFromApk(apkPath);
+    // 方法1: 通过 Context 获取 APK 路径
+    std::string apkPath = ApkSignatureParser::getApkPathFromContext(env, context);
+
+    // 方法2: 如果失败，尝试手动查找
+    if (apkPath.empty()) {
+        LOGW("Failed to get APK path from Context, trying fallback");
+        apkPath = ApkSignatureParser::getSelfApkPath();
     }
 
-    // 方法2: 通过PackageManager获取（可能被Xposed Hook）
-    result.pmSignature = SignatureVerifier::getSignature(env, context);
+    // 方法3: 直接解析 APK 获取签名
+    if (!apkPath.empty()) {
+        result.apkDirectSignature = ApkSignatureParser::getSignatureFromApk(apkPath);
+        if (!result.apkDirectSignature.empty()) {
+            LOGI("Successfully got signature from APK: %s", result.apkDirectSignature.c_str());
+        } else {
+            LOGE("Failed to get signature from APK: %s", apkPath.c_str());
+        }
+    } else {
+        LOGE("Failed to get APK path");
+    }
 
-    // 检查两个签名是否一致
+    // 方法4: 通过 PackageManager 获取签名（可能被Hook）
+    result.pmSignature = SignatureVerifier::getSignature(env, context);
+    if (!result.pmSignature.empty()) {
+        LOGI("Got signature from PackageManager: %s", result.pmSignature.c_str());
+    }
+
+    // 比较签名
     std::string apkLower = result.apkDirectSignature;
     std::string pmLower = result.pmSignature;
     std::transform(apkLower.begin(), apkLower.end(), apkLower.begin(), ::tolower);
@@ -537,7 +618,7 @@ SecureSignatureVerifier::VerificationResult SecureSignatureVerifier::getDetailed
 
     result.signaturesMatch = (!apkLower.empty() && !pmLower.empty() && apkLower == pmLower);
 
-    // 验证签名（使用期望签名）
+    // 验证预期签名
     if (!expectedSignature.empty()) {
         std::string expectedLower = expectedSignature;
         std::transform(expectedLower.begin(), expectedLower.end(), expectedLower.begin(), ::tolower);
@@ -549,11 +630,11 @@ SecureSignatureVerifier::VerificationResult SecureSignatureVerifier::getDetailed
     // 检测可能的Hook
     result.possibleHookDetected = (!apkLower.empty() && !pmLower.empty() && !result.signaturesMatch);
 
-    // 错误信息
+    // 设置错误信息
     if (result.apkDirectSignature.empty()) {
         result.errorMessage = "Failed to directly parse APK signature";
     } else if (!result.signaturesMatch) {
-        result.errorMessage = "Signature mismatch: PM may be hooked";
+        result.errorMessage = "Signature mismatch: PackageManager may be hooked";
     }
 
     return result;

@@ -39,6 +39,13 @@ static const char* XPOSED_CLASS_NAMES[] = {
     "org/lsposed/lspd/hooker/LSPHookBridge",  // LSPosed Hook
     "com/saurik/substrate/Substrate",  // Cydia Substrate
     "com/saurik/substrate/MSServer",   // Substrate Server
+    // NPatch框架检测
+    "org/npatch/manager/Constants",  // NPatch Manager
+    "org/npatch/lspd/hooker/NPHookBridge",  // NPatch Hook
+    "io/github/npatch/manager/Constants",  // NPatch Manager (变体)
+    "org/npatch/NpHooker",  // NPatch Hooker类
+    "org/npatch/core/NpCore",  // NPatch核心类
+    "de/robv/android/xposed/NpHooker",  // NPatch兼容Xposed的Hooker
     nullptr
 };
 
@@ -59,6 +66,14 @@ static const char* XPOSED_KEYWORDS[] = {
     "xhook",
     "andhook",
     "dexposed",
+    // NPatch框架特征
+    "NPatch",
+    "npatch",
+    "NPATCH",
+    "NpHooker",
+    "nphooker",
+    "NPHook",
+    "nphook",
     nullptr
 };
 
@@ -80,6 +95,11 @@ static const char* XPOSED_PACKAGE_NAMES[] = {
     "com.dimonvideo.luckypatcher",
     "com.forpda.lp",
     "com.android.vending.billing.InAppBillingService.LUCK",
+    // NPatch框架包名
+    "org.npatch.manager",
+    "io.github.npatch.manager",
+    "org.npatch",
+    "io.github.npatch",
     nullptr
 };
 
@@ -110,6 +130,21 @@ static const char* SUSPICIOUS_PATHS[] = {
     "/cache/.disable_magisk",
     "/dev/.magisk",
     "/dev/.magisk_hide",
+    // NPatch框架路径
+    "/data/data/org.npatch.manager",
+    "/data/data/io.github.npatch.manager",
+    "/data/user/0/org.npatch.manager",
+    "/data/user/0/io.github.npatch.manager",
+    "/data/misc/npatch",
+    "/data/adb/npatch",
+    "/data/adb/modules/npatch",
+    "/data/adb/modules/npatch_lsp",
+    "/data/adb/modules/zygisk_npatch",
+    "/system/lib/libnpatch.so",
+    "/system/lib64/libnpatch.so",
+    "/data/adb/modules/nposed",
+    "/data/adb/nposed",
+    "/data/misc/nposed",
     nullptr
 };
 
@@ -125,6 +160,14 @@ static const char* SUSPICIOUS_THREAD_NAMES[] = {
     "Magisk",
     "zygisk",
     "Zygisk",
+    // NPatch框架线程名
+    "NPatch",
+    "npatch",
+    "Npatch",
+    "NPHook",
+    "nphook",
+    "Nposed",
+    "nposed",
     nullptr
 };
 
@@ -134,22 +177,56 @@ bool XposedDetector::detectByStackTrace(JNIEnv* env) {
     bool detected = false;
 
     try {
+        // 清除可能存在的异常
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+        }
+
         // 获取当前线程
         jclass threadClass = env->FindClass("java/lang/Thread");
         if (!threadClass) {
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+            }
             return false;
         }
 
         jmethodID currentThread = env->GetStaticMethodID(threadClass, "currentThread",
                                                           "()Ljava/lang/Thread;");
+        if (!currentThread) {
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+            }
+            env->DeleteLocalRef(threadClass);
+            return false;
+        }
+
         jobject currentThreadObj = env->CallStaticObjectMethod(threadClass, currentThread);
+        if (!currentThreadObj || env->ExceptionCheck()) {
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+            }
+            env->DeleteLocalRef(threadClass);
+            return false;
+        }
 
         // 获取堆栈跟踪
         jmethodID getStackTrace = env->GetMethodID(threadClass, "getStackTrace",
                                                     "()[Ljava/lang/StackTraceElement;");
-        jobjectArray stackTrace = (jobjectArray)env->CallObjectMethod(currentThreadObj, getStackTrace);
+        if (!getStackTrace) {
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+            }
+            env->DeleteLocalRef(threadClass);
+            env->DeleteLocalRef(currentThreadObj);
+            return false;
+        }
 
-        if (!stackTrace) {
+        jobjectArray stackTrace = (jobjectArray)env->CallObjectMethod(currentThreadObj, getStackTrace);
+        if (!stackTrace || env->ExceptionCheck()) {
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+            }
             env->DeleteLocalRef(threadClass);
             env->DeleteLocalRef(currentThreadObj);
             return false;
@@ -177,9 +254,16 @@ bool XposedDetector::detectByStackTrace(JNIEnv* env) {
                         strstr(classNameStr, "lsposed") != nullptr ||
                         strstr(classNameStr, "LSPosed") != nullptr ||
                         strstr(classNameStr, "edxposed") != nullptr ||
-                        strstr(classNameStr, "EdXposed") != nullptr) {
+                        strstr(classNameStr, "EdXposed") != nullptr ||
+                        // NPatch框架检测
+                        strstr(classNameStr, "npatch") != nullptr ||
+                        strstr(classNameStr, "NPatch") != nullptr ||
+                        strstr(classNameStr, "NpHooker") != nullptr ||
+                        strstr(classNameStr, "nphooker") != nullptr ||
+                        strstr(classNameStr, "nposed") != nullptr ||
+                        strstr(classNameStr, "Nposed") != nullptr) {
                         detected = true;
-                        LOGW("Xposed detected in stack trace: %s", classNameStr);
+                        LOGW("Xposed/NPatch detected in stack trace: %s", classNameStr);
                         break;
                     }
                 }
@@ -207,6 +291,11 @@ bool XposedDetector::detectByClassLoader(JNIEnv* env) {
     bool detected = false;
 
     try {
+        // 清除可能存在的异常
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+        }
+
         // 尝试加载Xposed相关类
         for (int i = 0; XPOSED_CLASS_NAMES[i] != nullptr && !detected; i++) {
             jclass xposedClass = env->FindClass(XPOSED_CLASS_NAMES[i]);
@@ -227,39 +316,69 @@ bool XposedDetector::detectByClassLoader(JNIEnv* env) {
         if (classLoaderClass) {
             jmethodID getSystemClassLoader = env->GetStaticMethodID(classLoaderClass,
                 "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
-            jobject systemClassLoader = env->CallStaticObjectMethod(classLoaderClass,
-                getSystemClassLoader);
-
-            if (systemClassLoader) {
-                jclass classLoaderObjClass = env->GetObjectClass(systemClassLoader);
-                jmethodID loadClass = env->GetMethodID(classLoaderObjClass, "loadClass",
-                    "(Ljava/lang/String;)Ljava/lang/Class;");
-
-                for (int i = 0; XPOSED_CLASS_NAMES[i] != nullptr && !detected; i++) {
-                    // 将路径格式转换为类名格式
-                    std::string className(XPOSED_CLASS_NAMES[i]);
-                    std::replace(className.begin(), className.end(), '/', '.');
-
-                    jstring classNameStr = env->NewStringUTF(className.c_str());
-                    jclass loadedClass = (jclass)env->CallObjectMethod(systemClassLoader,
-                        loadClass, classNameStr);
-
-                    if (loadedClass != nullptr) {
-                        LOGW("Xposed class loaded: %s", className.c_str());
-                        detected = true;
-                        env->DeleteLocalRef(loadedClass);
-                    }
-
-                    env->DeleteLocalRef(classNameStr);
-
-                    if (env->ExceptionCheck()) {
-                        env->ExceptionClear();
-                    }
+            if (!getSystemClassLoader) {
+                if (env->ExceptionCheck()) {
+                    env->ExceptionClear();
                 }
-
-                env->DeleteLocalRef(classLoaderObjClass);
+                env->DeleteLocalRef(classLoaderClass);
+                return detected;
             }
 
+            jobject systemClassLoader = env->CallStaticObjectMethod(classLoaderClass,
+                getSystemClassLoader);
+            if (!systemClassLoader || env->ExceptionCheck()) {
+                if (env->ExceptionCheck()) {
+                    env->ExceptionClear();
+                }
+                env->DeleteLocalRef(classLoaderClass);
+                return detected;
+            }
+
+            jclass classLoaderObjClass = env->GetObjectClass(systemClassLoader);
+            if (!classLoaderObjClass) {
+                if (env->ExceptionCheck()) {
+                    env->ExceptionClear();
+                }
+                env->DeleteLocalRef(systemClassLoader);
+                env->DeleteLocalRef(classLoaderClass);
+                return detected;
+            }
+
+            jmethodID loadClass = env->GetMethodID(classLoaderObjClass, "loadClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;");
+            if (!loadClass) {
+                if (env->ExceptionCheck()) {
+                    env->ExceptionClear();
+                }
+                env->DeleteLocalRef(classLoaderObjClass);
+                env->DeleteLocalRef(systemClassLoader);
+                env->DeleteLocalRef(classLoaderClass);
+                return detected;
+            }
+
+            for (int i = 0; XPOSED_CLASS_NAMES[i] != nullptr && !detected; i++) {
+                // 将路径格式转换为类名格式
+                std::string className(XPOSED_CLASS_NAMES[i]);
+                std::replace(className.begin(), className.end(), '/', '.');
+
+                jstring classNameStr = env->NewStringUTF(className.c_str());
+                jclass loadedClass = (jclass)env->CallObjectMethod(systemClassLoader,
+                    loadClass, classNameStr);
+
+                if (loadedClass != nullptr) {
+                    LOGW("Xposed class loaded: %s", className.c_str());
+                    detected = true;
+                    env->DeleteLocalRef(loadedClass);
+                }
+
+                env->DeleteLocalRef(classNameStr);
+
+                if (env->ExceptionCheck()) {
+                    env->ExceptionClear();
+                }
+            }
+
+            env->DeleteLocalRef(classLoaderObjClass);
             env->DeleteLocalRef(systemClassLoader);
             env->DeleteLocalRef(classLoaderClass);
         }
@@ -275,50 +394,82 @@ bool XposedDetector::detectMethodHooks(JNIEnv* env) {
     bool detected = false;
 
     try {
+        // 清除可能存在的异常
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+        }
+
         // 检测关键方法是否被Hook
         // 方法1: 检测Method对象的modifiers字段是否被修改
 
         jclass methodClass = env->FindClass("java/lang/reflect/Method");
-        if (methodClass) {
-            // 获取一些关键方法并检查其属性
-            jclass stringClass = env->FindClass("java/lang/String");
-            if (stringClass) {
-                jmethodID getMethod = env->GetStaticMethodID(methodClass, "getMethod",
-                    "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;");
+        if (!methodClass) {
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+            }
+            return false;
+        }
 
-                jstring methodName = env->NewStringUTF("toString");
-                jobjectArray paramTypes = nullptr;
-                jobject method = env->CallStaticObjectMethod(methodClass, getMethod,
-                    methodName, paramTypes);
+        // 获取一些关键方法并检查其属性
+        jclass stringClass = env->FindClass("java/lang/String");
+        if (!stringClass) {
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+            }
+            env->DeleteLocalRef(methodClass);
+            return false;
+        }
 
-                if (method) {
-                    // 检查方法的修饰符
-                    jclass executableClass = env->FindClass("java/lang/reflect/Executable");
-                    if (executableClass) {
-                        jmethodID getModifiers = env->GetMethodID(executableClass,
-                            "getModifiers", "()I");
-                        jint modifiers = env->CallIntMethod(method, getModifiers);
+        jmethodID getMethod = env->GetStaticMethodID(methodClass, "getMethod",
+            "(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;");
+        if (!getMethod) {
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+            }
+            env->DeleteLocalRef(methodClass);
+            env->DeleteLocalRef(stringClass);
+            return false;
+        }
 
-                        // 检查是否有异常的修饰符标志
-                        // native方法的modifier包含0x100
-                        if ((modifiers & 0x100) != 0) {
-                            // toString不应该是native方法，如果标记为native可能被hook
-                            // 注意：这可能产生误报，需要结合其他检测
-                            LOGW("Suspicious method modifier detected");
-                        }
+        jstring methodName = env->NewStringUTF("toString");
+        jobjectArray paramTypes = nullptr;
+        jobject method = env->CallStaticObjectMethod(methodClass, getMethod,
+            methodName, paramTypes);
 
-                        env->DeleteLocalRef(executableClass);
-                    }
+        if (!method || env->ExceptionCheck()) {
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+            }
+            env->DeleteLocalRef(methodName);
+            env->DeleteLocalRef(methodClass);
+            env->DeleteLocalRef(stringClass);
+            return false;
+        }
 
-                    env->DeleteLocalRef(method);
+        // 检查方法的修饰符
+        jclass executableClass = env->FindClass("java/lang/reflect/Executable");
+        if (executableClass) {
+            jmethodID getModifiers = env->GetMethodID(executableClass,
+                "getModifiers", "()I");
+            if (getModifiers) {
+                jint modifiers = env->CallIntMethod(method, getModifiers);
+
+                // 检查是否有异常的修饰符标志
+                // native方法的modifier包含0x100
+                if ((modifiers & 0x100) != 0) {
+                    // toString不应该是native方法，如果标记为native可能被hook
+                    // 注意：这可能产生误报，需要结合其他检测
+                    LOGW("Suspicious method modifier detected");
                 }
-
-                env->DeleteLocalRef(methodName);
-                env->DeleteLocalRef(stringClass);
             }
 
-            env->DeleteLocalRef(methodClass);
+            env->DeleteLocalRef(executableClass);
         }
+
+        env->DeleteLocalRef(method);
+        env->DeleteLocalRef(methodName);
+        env->DeleteLocalRef(stringClass);
+        env->DeleteLocalRef(methodClass);
 
         // 方法2: 检测内存中的Hook点
         detected = detectHookPoints(env, "java/lang/String", "hashCode") ||
@@ -352,7 +503,13 @@ bool XposedDetector::detectByMemoryPatterns(JNIEnv* env) {
                 mapsContent.find("lsposed") != std::string::npos ||
                 mapsContent.find("riru") != std::string::npos ||
                 mapsContent.find("magisk") != std::string::npos ||
-                mapsContent.find("zygisk") != std::string::npos) {
+                mapsContent.find("zygisk") != std::string::npos ||
+                // NPatch框架检测
+                mapsContent.find("npatch") != std::string::npos ||
+                mapsContent.find("NPatch") != std::string::npos ||
+                mapsContent.find("nposed") != std::string::npos ||
+                mapsContent.find("libnpatch") != std::string::npos ||
+                mapsContent.find("nphook") != std::string::npos) {
                 LOGW("Suspicious memory mapping detected");
                 detected = true;
             }

@@ -1,4 +1,41 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#3F51B5</color>
+
+    <!-- 状态颜色 -->
+    <color name="status_safe">#4CAF50</color>
+    <color name="status_safe_bg">#E8F5E9</color>
+    <color name="status_warning">#FF9800</color>
+    <color name="status_warning_bg">#FFF3E0</color>
+    <color name="status_danger">#F44336</color>
+    <color name="status_danger_bg">#FFEBEE</color>
+    <color name="status_neutral">#9E9E9E</color>
+    <color name="status_neutral_bg">#F5F5F5</color>
+    <color name="status_loading">#2196F3</color>
+    <color name="status_loading_bg">#E3F2FD</color>
+
+    <!-- 界面颜色 -->
+    <color name="primary">#3F51B5</color>
+    <color name="primary_dark">#303F9F</color>
+    <color name="accent">#FF4081</color>
+    <color name="background">#FAFAFA</color>
+    <color name="card_background">#FFFFFF</color>
+    <color name="divider">#E0E0E0</color>
+    <color name="text_primary">#212121</color>
+    <color name="text_secondary">#757575</color>
+    <color name="text_hint">#9E9E9E</color>
+
+    <!-- Native层标识色（绿色系） -->
+    <color name="native_indicator">#2E7D32</color>
+    <color name="native_bg">#E8F5E9</color>
+
+    <!-- Java层标识色（橙色系） -->
+    <color name="java_indicator">#E65100</color>
+    <color name="java_bg">#FFF3E0</color>
+
+    <!-- 检测项颜色 -->
+    <color name="detect_pass">#4CAF50</color>
+    <color name="detect_fail">#F44336</color>
+    <color name="detect_detected">#FF5722</color>
+    <color name="detect_not_detected">#4CAF50</color>
 </resources>

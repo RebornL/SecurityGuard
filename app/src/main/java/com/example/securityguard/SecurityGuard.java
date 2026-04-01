@@ -2,8 +2,13 @@ package com.example.securityguard;
 
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.Signature;
 import android.os.Build;
 import android.util.Log;
+
+import java.security.MessageDigest;
 
 /**
  * SecurityGuard - 安全验证工具类
@@ -84,6 +89,13 @@ public class SecurityGuard {
     private static native String nativeGetSignatureDirect();
 
     /**
+     * 直接从APK文件获取签名（带Context参数，推荐使用）
+     * @param context 应用Context
+     * @return 签名字符串（SHA-256哈希）
+     */
+    private static native String nativeGetSignatureDirectWithContext(Context context);
+
+    /**
      * 安全验证签名（同时使用两种方式，检测PM Hook）
      * @param context 应用Context
      * @param expectedSignature 预期的签名哈希
@@ -104,6 +116,14 @@ public class SecurityGuard {
      * @return APK文件路径
      */
     private static native String nativeGetApkPath();
+
+    /**
+     * 执行Native层安全检查（推荐使用）
+     * 明确返回C++获取的签名值和检查状态
+     * @param context 应用Context
+     * @return Native安全检查结果
+     */
+    private static native NativeSecurityCheckResult nativePerformNativeSecurityCheck(Context context);
 
     // ==================== 公共API ====================
 
@@ -241,6 +261,8 @@ public class SecurityGuard {
      * 这个方法不会被Xposed的PackageManager绕过选项影响，
      * 因为它直接在Native层解析APK文件，不经过Java层的PackageManager。
      *
+     * 注意：此方法可能因SELinux权限限制而失败，建议使用getSignatureDirect(Context)
+     *
      * @return 签名哈希字符串，如果获取失败返回null
      */
     public static String getSignatureDirect() {
@@ -249,6 +271,65 @@ public class SecurityGuard {
         } catch (Exception e) {
             Log.e(TAG, "Failed to get signature directly from APK", e);
             return null;
+        }
+    }
+
+    /**
+     * 直接从APK文件获取签名（推荐使用此方法）
+     *
+     * 通过Context获取APK路径，更可靠。
+     * 这个方法不会被Xposed的PackageManager绕过选项影响。
+     *
+     * @param context 应用Context
+     * @return 签名哈希字符串，如果获取失败返回null
+     */
+    public static String getSignatureDirect(Context context) {
+        if (context == null) {
+            Log.e(TAG, "Context is null, falling back to no-context method");
+            return getSignatureDirect();
+        }
+        try {
+            String signature = nativeGetSignatureDirectWithContext(context);
+            if (signature == null || signature.isEmpty()) {
+                // 回退到无Context版本
+                Log.w(TAG, "nativeGetSignatureDirectWithContext failed, trying fallback");
+                return getSignatureDirect();
+            }
+            return signature;
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to get signature directly from APK with context", e);
+            // 回退到无Context版本
+            return getSignatureDirect();
+        }
+    }
+
+    /**
+     * 执行Native层安全检查（强烈推荐使用）
+     *
+     * 在C++ Native层执行完整的安全检查，明确返回：
+     * 1. C++ Native层获取的真实签名值
+     * 2. Java层获取的签名值（对比用）
+     * 3. 签名一致性检测结果
+     * 4. PackageManager Hook检测结果
+     * 5. Xposed框架检测结果
+     *
+     * @param context 应用Context
+     * @return Native安全检查结果，包含所有检测详情
+     */
+    public static NativeSecurityCheckResult performNativeSecurityCheck(Context context) {
+        if (context == null) {
+            Log.e(TAG, "Context is null for native security check");
+            NativeSecurityCheckResult result = new NativeSecurityCheckResult();
+            result.errorMessage = "Context is null";
+            return result;
+        }
+        try {
+            return nativePerformNativeSecurityCheck(context);
+        } catch (Exception e) {
+            Log.e(TAG, "Native security check failed", e);
+            NativeSecurityCheckResult result = new NativeSecurityCheckResult();
+            result.errorMessage = "Exception: " + e.getMessage();
+            return result;
         }
     }
 
@@ -414,6 +495,194 @@ public class SecurityGuard {
             sb.append("  emulatorDetected: ").append(emulatorDetected).append("\n");
             sb.append("  isSecure: ").append(isSecure).append("\n");
             sb.append("  signatureResult:\n").append(signatureResult).append("\n");
+            sb.append("}");
+            return sb.toString();
+        }
+    }
+
+    // ==================== 纯Java层签名获取（确保被Xposed Hook） ====================
+
+    /**
+     * 【重要】纯Java层获取签名 - 确保能被Xposed Hook
+     *
+     * 这个方法完全在Java层调用PackageManager，不经过Native JNI，
+     * 因此可以确保被Xposed签名绕过模块Hook，返回篡改后的签名值。
+     *
+     * 使用场景：用于检测是否存在签名篡改Hook
+     * 对比此方法返回的签名与getSignatureDirect()返回的真实签名，
+     * 如果不一致，说明PackageManager被Hook篡改了签名。
+     *
+     * @param context 应用Context
+     * @return 签名哈希字符串（可能被Xposed篡改），失败返回null
+     */
+    public static String getSignatureFromJava(Context context) {
+        if (context == null) {
+            Log.e(TAG, "Context is null");
+            return null;
+        }
+        try {
+            PackageManager pm = context.getPackageManager();
+            String packageName = context.getPackageName();
+
+            // 使用GET_SIGNATURES标志获取签名
+            // 这个调用会被Xposed签名绕过模块Hook
+            PackageInfo packageInfo = pm.getPackageInfo(
+                    packageName,
+                    PackageManager.GET_SIGNATURES
+            );
+
+            if (packageInfo.signatures == null || packageInfo.signatures.length == 0) {
+                Log.e(TAG, "No signatures found from PackageManager");
+                return null;
+            }
+
+            // 获取第一个签名并计算SHA-256哈希
+            Signature signature = packageInfo.signatures[0];
+            byte[] signatureBytes = signature.toByteArray();
+
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] hashBytes = md.digest(signatureBytes);
+
+            // 转换为十六进制字符串
+            StringBuilder sb = new StringBuilder();
+            for (byte b : hashBytes) {
+                sb.append(String.format("%02x", b));
+            }
+
+            String hash = sb.toString();
+            Log.i(TAG, "Java-layer signature hash: " + hash);
+            return hash;
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to get signature from Java layer", e);
+            return null;
+        }
+    }
+
+    /**
+     * 【重要】完整的签名对比检测
+     *
+     * 同时获取三种签名并对比：
+     * 1. Java层PackageManager签名（会被Xposed Hook篡改）
+     * 2. Native JNI层PackageManager签名（可能被部分Hook）
+     * 3. Native直接解析APK签名（真实签名，不会被篡改）
+     *
+     * @param context 应用Context
+     * @return 签名对比结果
+     */
+    public static SignatureComparisonResult compareSignatures(Context context) {
+        SignatureComparisonResult result = new SignatureComparisonResult();
+
+        // 1. 纯Java层获取签名（确保被Xposed Hook）
+        result.javaSignature = getSignatureFromJava(context);
+        Log.i(TAG, "Java signature: " + result.javaSignature);
+
+        // 2. Native JNI层获取签名（通过PackageManager）
+        result.nativePmSignature = getSignature(context);
+        Log.i(TAG, "Native PM signature: " + result.nativePmSignature);
+
+        // 3. Native直接解析APK获取真实签名
+        result.realSignature = getSignatureDirect();
+        Log.i(TAG, "Real APK signature: " + result.realSignature);
+
+        // 检测Hook情况
+        result.analyzeResults();
+
+        return result;
+    }
+
+    /**
+     * 签名对比结果类
+     */
+    public static class SignatureComparisonResult {
+        // 纯Java层获取的签名（会被Xposed Hook）
+        public String javaSignature;
+
+        // Native JNI层获取的签名（可能被部分Hook）
+        public String nativePmSignature;
+
+        // Native直接解析APK的真实签名（不会被篡改）
+        public String realSignature;
+
+        // 分析结果
+        public boolean javaHooked;       // Java层是否被Hook
+        public boolean nativeHooked;     // Native JNI层是否被Hook
+        public boolean signatureTampered; // 签名是否被篡改
+        public String analysisReport;
+
+        public SignatureComparisonResult() {
+            javaSignature = "";
+            nativePmSignature = "";
+            realSignature = "";
+            javaHooked = false;
+            nativeHooked = false;
+            signatureTampered = false;
+            analysisReport = "";
+        }
+
+        /**
+         * 分析检测结果
+         */
+        public void analyzeResults() {
+            StringBuilder report = new StringBuilder();
+            report.append("=== Signature Comparison Analysis ===\n");
+
+            // 检查真实签名是否获取成功
+            if (realSignature == null || realSignature.isEmpty()) {
+                report.append("ERROR: Failed to get real signature from APK\n");
+                analysisReport = report.toString();
+                return;
+            }
+
+            // 对比Java签名与真实签名
+            boolean javaMatchesReal = signaturesEqual(javaSignature, realSignature);
+            report.append("Java vs Real: ").append(javaMatchesReal ? "MATCH" : "MISMATCH").append("\n");
+
+            if (!javaMatchesReal && javaSignature != null && !javaSignature.isEmpty()) {
+                javaHooked = true;
+                report.append("  -> Java layer signature was HOOKED!\n");
+                report.append("  -> Java returned: ").append(javaSignature).append("\n");
+                report.append("  -> Real signature: ").append(realSignature).append("\n");
+            }
+
+            // 对比Native PM签名与真实签名
+            boolean nativeMatchesReal = signaturesEqual(nativePmSignature, realSignature);
+            report.append("Native PM vs Real: ").append(nativeMatchesReal ? "MATCH" : "MISMATCH").append("\n");
+
+            if (!nativeMatchesReal && nativePmSignature != null && !nativePmSignature.isEmpty()) {
+                nativeHooked = true;
+                report.append("  -> Native JNI signature was HOOKED!\n");
+            }
+
+            // 综合判断
+            signatureTampered = javaHooked || nativeHooked;
+
+            if (signatureTampered) {
+                report.append("\nWARNING: Signature tampering detected!\n");
+                report.append("The application's signature verification may be bypassed.\n");
+            } else {
+                report.append("\nOK: No signature tampering detected.\n");
+            }
+
+            analysisReport = report.toString();
+        }
+
+        private boolean signaturesEqual(String sig1, String sig2) {
+            if (sig1 == null || sig2 == null) return false;
+            return sig1.toLowerCase().trim().equals(sig2.toLowerCase().trim());
+        }
+
+        @Override
+        public String toString() {
+            StringBuilder sb = new StringBuilder();
+            sb.append("SignatureComparisonResult {\n");
+            sb.append("  javaSignature: ").append(javaSignature).append("\n");
+            sb.append("  nativePmSignature: ").append(nativePmSignature).append("\n");
+            sb.append("  realSignature: ").append(realSignature).append("\n");
+            sb.append("  javaHooked: ").append(javaHooked).append("\n");
+            sb.append("  nativeHooked: ").append(nativeHooked).append("\n");
+            sb.append("  signatureTampered: ").append(signatureTampered).append("\n");
+            sb.append("  analysisReport:\n").append(analysisReport).append("\n");
             sb.append("}");
             return sb.toString();
         }

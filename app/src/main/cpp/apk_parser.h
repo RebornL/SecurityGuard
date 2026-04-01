@@ -29,10 +29,18 @@ public:
     static std::string getSignatureFromApk(const std::string& apkPath);
 
     /**
-     * 从正在运行的进程获取自己的APK路径
+     * 从正在运行的进程获取自己的APK路径（无参数版本）
      * @return APK路径
      */
     static std::string getSelfApkPath();
+
+    /**
+     * 通过JNI从Context获取APK路径（推荐使用）
+     * @param env JNI环境
+     * @param context 应用Context
+     * @return APK路径
+     */
+    static std::string getApkPathFromContext(JNIEnv* env, jobject context);
 
     /**
      * 直接验证当前应用签名（不经过PackageManager）

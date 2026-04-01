@@ -45,6 +45,14 @@ public:
      */
     static std::string getSignature(JNIEnv* env, jobject context);
 
+    /**
+     * 处理签名数组，提取并计算哈希
+     * @param env JNI环境
+     * @param signatures 签名数组
+     * @return 签名哈希字符串
+     */
+    static std::string processSignatureArray(JNIEnv* env, jobjectArray signatures);
+
 private:
     /**
      * 计算字节数组的SHA-256哈希

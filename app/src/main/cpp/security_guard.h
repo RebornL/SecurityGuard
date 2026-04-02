@@ -25,11 +25,15 @@ namespace security {
 
 /**
  * 签名验证器
+ *
+ * 提供两种签名获取方式：
+ * 1. 直接解析APK文件（安全，不会被Hook）- 默认使用
+ * 2. 通过PackageManager获取（可能被Hook）- 仅用于对比检测
  */
 class SignatureVerifier {
 public:
     /**
-     * 验证应用签名
+     * 验证应用签名（使用安全方式）
      * @param env JNI环境
      * @param context 应用Context对象
      * @param expectedSignature 预期的签名哈希（SHA-256）
@@ -38,12 +42,31 @@ public:
     static bool verifySignature(JNIEnv* env, jobject context, const std::string& expectedSignature);
 
     /**
-     * 获取当前应用签名
+     * 获取当前应用签名（默认使用安全方式）
+     * 优先使用直接解析APK的方式，绕过PackageManager Hook
      * @param env JNI环境
      * @param context 应用Context对象
      * @return 签名字符串
      */
     static std::string getSignature(JNIEnv* env, jobject context);
+
+    /**
+     * 通过PackageManager获取签名（可能被Xposed Hook）
+     * 此方法仅用于对比检测，不应作为主要验证方式
+     * @param env JNI环境
+     * @param context 应用Context对象
+     * @return 签名字符串
+     */
+    static std::string getSignatureViaPackageManager(JNIEnv* env, jobject context);
+
+    /**
+     * 检测PackageManager是否被Hook
+     * 通过比较直接解析APK和通过PackageManager获取的签名是否一致
+     * @param env JNI环境
+     * @param context 应用Context对象
+     * @return 是否检测到Hook
+     */
+    static bool detectPmHook(JNIEnv* env, jobject context);
 
     /**
      * 处理签名数组，提取并计算哈希

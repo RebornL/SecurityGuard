@@ -81,6 +81,20 @@ static inline uint32_t readU32(const uint8_t* data, size_t offset) {
            (data[offset + 2] << 16) | (data[offset + 3] << 24);
 }
 
+/**
+ * 小端序读取 uint64
+ */
+static inline uint64_t readU64(const uint8_t* data, size_t offset) {
+    return (uint64_t)data[offset] |
+           ((uint64_t)data[offset + 1] << 8) |
+           ((uint64_t)data[offset + 2] << 16) |
+           ((uint64_t)data[offset + 3] << 24) |
+           ((uint64_t)data[offset + 4] << 32) |
+           ((uint64_t)data[offset + 5] << 40) |
+           ((uint64_t)data[offset + 6] << 48) |
+           ((uint64_t)data[offset + 7] << 56);
+}
+
 // ==================== ApkSignatureParser实现 ====================
 
 std::string ApkSignatureParser::getApkPathFromContext(JNIEnv* env, jobject context) {
@@ -279,7 +293,9 @@ static size_t findEocd(const std::vector<uint8_t>& apkData) {
 static bool parseApkSigningBlock(const std::vector<uint8_t>& apkData, size_t cdOffset,
                                   std::vector<uint8_t>& signatureData) {
     // APK Signing Block 位于 Central Directory 之前
-    // 格式: size(4) + data + size(4) + magic(16)
+    // 格式: [blockSize1(8)] [signing data] [blockSize2(8)] [magic(16)]
+    //                                     ↑               ↑
+    //                              cdOffset-24       cdOffset-16
 
     if (cdOffset < 32) {
         LOGE("Central Directory offset too small: %zu", cdOffset);
@@ -303,11 +319,11 @@ static bool parseApkSigningBlock(const std::vector<uint8_t>& apkData, size_t cdO
 
     LOGI("Found APK Signing Block");
 
-    // 读取 block size
+    // 读取 block size (uint64, 位于 blockSize2 位置)
     size_t blockSizeOffset = cdOffset - 24;
-    uint32_t blockSize = readU32(apkData.data(), blockSizeOffset);
+    uint64_t blockSize = readU64(apkData.data(), blockSizeOffset);
 
-    LOGI("APK Signing Block size: %u", blockSize);
+    LOGI("APK Signing Block size: %llu", (unsigned long long)blockSize);
 
     if (blockSize == 0 || blockSize > cdOffset) {
         LOGE("Invalid block size");
@@ -315,26 +331,49 @@ static bool parseApkSigningBlock(const std::vector<uint8_t>& apkData, size_t cdO
     }
 
     // 解析 key-value pairs
+    // APK Signing Block结构：
+    // [blockSize1(8)] [signing data] [blockSize2(8)] [magic(16)]
+    //       ↑              ↑              ↑             ↑
+    //  cdOffset-bs-8   cdOffset-bs    cdOffset-24    cdOffset-16
+    // 
+    // blockSize = signing data + blockSize2(8) + magic(16) = signing data + 24
+    
     size_t blockStart = cdOffset - blockSize - 8;
-    size_t pos = blockStart;
+    
+    // 读取并验证blockSize1
+    uint64_t blockSize1 = readU64(apkData.data(), blockStart);
+    if (blockSize1 != blockSize) {
+        LOGE("Block size mismatch: size1=%llu, size2=%llu", (unsigned long long)blockSize1, (unsigned long long)blockSize);
+        return false;
+    }
 
-    while (pos < cdOffset - 24) {
-        if (pos + 8 > cdOffset - 24) break;
+    // 跳过blockSize1，开始解析pairs (位于 cdOffset - blockSize)
+    // signing data 内部格式：
+    // repeated ID-value pairs:
+    //     uint64: pair_size (excluding this field)
+    //     uint32: ID
+    //     (pair_size - 4) bytes: value
+    size_t pos = blockStart + 8;
+    size_t endOfPairs = cdOffset - 24;
 
-        uint32_t pairSize = readU32(apkData.data(), pos);
-        pos += 4;
+    LOGI("Signing data: start=%zu, end=%zu, blockSize=%llu", pos, endOfPairs, (unsigned long long)blockSize);
 
-        if (pos + 4 > cdOffset - 24) break;
+    while (pos + 12 <= endOfPairs) {  // 8 (size) + 4 (id) minimum
+        // pair size 是 uint64
+        uint64_t pairSize = readU64(apkData.data(), pos);
+        pos += 8;
+
+        if (pos + 4 > endOfPairs) break;
 
         uint32_t pairId = readU32(apkData.data(), pos);
         pos += 4;
 
-        LOGD("Signing Block Pair ID: 0x%08x, size: %u", pairId, pairSize);
+        LOGD("Signing Block Pair ID: 0x%08x, size: %llu", pairId, (unsigned long long)pairSize);
 
         // V2签名块ID: 0x7109871a
         // V3签名块ID: 0xf05368c0
         if (pairId == 0x7109871a || pairId == 0xf05368c0) {
-            size_t dataSize = pairSize - 4;
+            size_t dataSize = (size_t)(pairSize - 4);
             if (pos + dataSize <= apkData.size()) {
                 signatureData.assign(apkData.begin() + pos, apkData.begin() + pos + dataSize);
                 LOGI("Extracted signature block (ID: 0x%08x), size: %zu", pairId, signatureData.size());
@@ -342,7 +381,7 @@ static bool parseApkSigningBlock(const std::vector<uint8_t>& apkData, size_t cdO
             }
         }
 
-        pos += pairSize - 4;
+        pos += (size_t)(pairSize - 4);
     }
 
     LOGE("No V2/V3 signature block found");

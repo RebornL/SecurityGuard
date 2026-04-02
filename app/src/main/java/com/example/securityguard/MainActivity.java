@@ -49,6 +49,8 @@ public class MainActivity extends AppCompatActivity {
     private TextView nativeApkPath;
     private TextView javaSignatureTextView;
     private TextView javaSignatureStatus;
+    private TextView javaDirectSignatureTextView;
+    private TextView javaDirectSignatureStatus;
     private LinearLayout signatureComparisonResult;
     private TextView signatureMatchIcon;
     private TextView signatureMatchStatus;
@@ -113,6 +115,8 @@ public class MainActivity extends AppCompatActivity {
         nativeApkPath = findViewById(R.id.nativeApkPath);
         javaSignatureTextView = findViewById(R.id.javaSignatureTextView);
         javaSignatureStatus = findViewById(R.id.javaSignatureStatus);
+        javaDirectSignatureTextView = findViewById(R.id.javaDirectSignatureTextView);
+        javaDirectSignatureStatus = findViewById(R.id.javaDirectSignatureStatus);
         signatureComparisonResult = findViewById(R.id.signatureComparisonResult);
         signatureMatchIcon = findViewById(R.id.signatureMatchIcon);
         signatureMatchStatus = findViewById(R.id.signatureMatchStatus);
@@ -227,6 +231,8 @@ public class MainActivity extends AppCompatActivity {
         nativeSignatureTextView.setTextColor(getColorRes(R.color.text_hint));
         javaSignatureTextView.setText("获取中...");
         javaSignatureTextView.setTextColor(getColorRes(R.color.text_hint));
+        javaDirectSignatureTextView.setText("获取中...");
+        javaDirectSignatureTextView.setTextColor(getColorRes(R.color.text_hint));
         nativeApkPath.setText("");
         signatureComparisonResult.setBackgroundColor(getColorRes(R.color.status_neutral_bg));
         signatureMatchIcon.setText("...");
@@ -317,6 +323,20 @@ public class MainActivity extends AppCompatActivity {
             javaSignatureTextView.setTextColor(getColorRes(R.color.status_danger));
             javaSignatureStatus.setText("PackageManager - 失败");
             javaSignatureStatus.setTextColor(getColorRes(R.color.status_danger));
+        }
+
+        // Java层直接解析APK签名（不会被Hook）
+        String javaDirectSignature = SignatureHelper.getSignatureDirectFromApk(this);
+        if (javaDirectSignature != null && !javaDirectSignature.isEmpty()) {
+            javaDirectSignatureTextView.setText(javaDirectSignature);
+            javaDirectSignatureTextView.setTextColor(getColorRes(R.color.native_indicator));
+            javaDirectSignatureStatus.setText("直接解析APK - 成功");
+            javaDirectSignatureStatus.setTextColor(getColorRes(R.color.status_safe));
+        } else {
+            javaDirectSignatureTextView.setText("获取失败");
+            javaDirectSignatureTextView.setTextColor(getColorRes(R.color.status_danger));
+            javaDirectSignatureStatus.setText("直接解析APK - 失败");
+            javaDirectSignatureStatus.setTextColor(getColorRes(R.color.status_danger));
         }
 
         // 签名对比结果

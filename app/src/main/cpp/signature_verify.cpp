@@ -1,8 +1,13 @@
 /**
  * 签名验证实现
+ *
+ * 提供两种签名获取方式：
+ * 1. 直接解析APK文件（安全，不会被Hook）- 推荐使用
+ * 2. 通过PackageManager获取（可能被Hook）- 仅用于对比检测
  */
 
 #include "security_guard.h"
+#include "apk_parser.h"
 
 // 根据是否有OpenSSL选择不同的哈希实现
 #ifdef USE_FALLBACK_HASH
@@ -52,6 +57,12 @@ static bool checkAndClearException(JNIEnv* env, const char* operation) {
     return false;
 }
 
+/**
+ * 获取签名 - 优先使用直接解析APK的方式（安全）
+ *
+ * 此方法现在默认使用直接解析APK文件的方式获取签名，
+ * 绕过Java层的PackageManager，因此不会被Xposed Hook。
+ */
 std::string SignatureVerifier::getSignature(JNIEnv* env, jobject context) {
     if (!env || !context) {
         LOGE("Invalid parameters for getSignature");
@@ -59,6 +70,40 @@ std::string SignatureVerifier::getSignature(JNIEnv* env, jobject context) {
     }
 
     // 清除可能存在的异常
+    env->ExceptionClear();
+
+    // 优先使用直接解析APK的方式（不会被Hook）
+    std::string apkPath = ApkSignatureParser::getApkPathFromContext(env, context);
+
+    if (apkPath.empty()) {
+        LOGW("Failed to get APK path from Context, trying fallback");
+        apkPath = ApkSignatureParser::getSelfApkPath();
+    }
+
+    if (!apkPath.empty()) {
+        std::string signature = ApkSignatureParser::getSignatureFromApk(apkPath);
+        if (!signature.empty()) {
+            LOGI("Got signature from direct APK parsing: %s", signature.c_str());
+            return signature;
+        }
+        LOGW("Failed to get signature from APK directly, falling back to PackageManager");
+    }
+
+    // 回退到PackageManager方式（可能被Hook）
+    return getSignatureViaPackageManager(env, context);
+}
+
+/**
+ * 通过PackageManager获取签名（可能被Xposed Hook）
+ *
+ * 此方法仅用于对比检测，不应作为主要的签名验证方式。
+ */
+std::string SignatureVerifier::getSignatureViaPackageManager(JNIEnv* env, jobject context) {
+    if (!env || !context) {
+        LOGE("Invalid parameters for getSignatureViaPackageManager");
+        return "";
+    }
+
     env->ExceptionClear();
 
     try {
@@ -227,7 +272,7 @@ std::string SignatureVerifier::getSignature(JNIEnv* env, jobject context) {
         return result;
 
     } catch (...) {
-        LOGE("Exception in getSignature");
+        LOGE("Exception in getSignatureViaPackageManager");
         if (env->ExceptionCheck()) {
             env->ExceptionDescribe();
             env->ExceptionClear();
@@ -307,12 +352,16 @@ std::string SignatureVerifier::processSignatureArray(JNIEnv* env, jobjectArray s
     return hash;
 }
 
+/**
+ * 验证签名（使用安全方式）
+ */
 bool SignatureVerifier::verifySignature(JNIEnv* env, jobject context, const std::string& expectedSignature) {
     if (expectedSignature.empty()) {
         LOGE("Expected signature is empty");
         return false;
     }
 
+    // 使用安全的签名获取方式（直接解析APK）
     std::string currentSignature = getSignature(env, context);
     if (currentSignature.empty()) {
         LOGE("Failed to get current signature");
@@ -335,6 +384,52 @@ bool SignatureVerifier::verifySignature(JNIEnv* env, jobject context, const std:
     }
 
     return result;
+}
+
+/**
+ * 检测PackageManager是否被Hook
+ *
+ * 通过比较直接解析APK和通过PackageManager获取的签名是否一致来判断
+ */
+bool SignatureVerifier::detectPmHook(JNIEnv* env, jobject context) {
+    if (!env || !context) {
+        return false;
+    }
+
+    // 获取APK路径
+    std::string apkPath = ApkSignatureParser::getApkPathFromContext(env, context);
+    if (apkPath.empty()) {
+        apkPath = ApkSignatureParser::getSelfApkPath();
+    }
+
+    // 直接解析APK获取真实签名
+    std::string realSignature;
+    if (!apkPath.empty()) {
+        realSignature = ApkSignatureParser::getSignatureFromApk(apkPath);
+    }
+
+    // 通过PackageManager获取签名（可能被Hook）
+    std::string pmSignature = getSignatureViaPackageManager(env, context);
+
+    // 对比签名
+    if (realSignature.empty() || pmSignature.empty()) {
+        LOGW("Cannot compare signatures - one or both are empty");
+        return false;
+    }
+
+    std::string realLower = realSignature;
+    std::string pmLower = pmSignature;
+    std::transform(realLower.begin(), realLower.end(), realLower.begin(), ::tolower);
+    std::transform(pmLower.begin(), pmLower.end(), pmLower.begin(), ::tolower);
+
+    if (realLower != pmLower) {
+        LOGW("PackageManager Hook detected!");
+        LOGW("Real signature: %s", realSignature.c_str());
+        LOGW("PM signature:   %s", pmSignature.c_str());
+        return true;
+    }
+
+    return false;
 }
 
 } // namespace security

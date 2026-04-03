@@ -522,7 +522,9 @@ Java_com_example_securityguard_SecurityGuard_nativePerformNativeSecurityCheck(
     }
 
     // ========== 3. Java层获取签名（对比用） ==========
-    std::string javaSignature = SignatureVerifier::getSignature(env, context);
+    // 注意：这里必须使用PackageManager方式获取签名，用于与Native直接解析的签名对比
+    // 如果使用直接解析APK的方式，两者会返回相同的值，无法检测NPatch篡改
+    std::string javaSignature = SignatureVerifier::getSignatureViaPackageManager(env, context);
     bool javaSignatureSuccess = !javaSignature.empty();
 
     if (javaSignatureSuccess) {

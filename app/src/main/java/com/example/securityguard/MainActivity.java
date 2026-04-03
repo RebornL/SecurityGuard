@@ -294,17 +294,27 @@ public class MainActivity extends AppCompatActivity {
      * 更新签名对比区域
      */
     private void updateSignatureSection(NativeSecurityCheckResult result) {
+        // 打印APK路径信息 - 使用SignatureHelper获取真实路径（尝试绕过NPatch）
+        String apkPath = SignatureHelper.getApkPath(this);
+        String originalSourceDir = getApplicationInfo().sourceDir;
+        Log.i(TAG, "=== Signature Analysis Start ===");
+        Log.i(TAG, "Original sourceDir: " + originalSourceDir);
+        Log.i(TAG, "SignatureHelper.getApkPath: " + apkPath);
+        Log.i(TAG, "Native result APK path: " + result.apkPath);
+
         // Native层签名
         if (result.nativeSignatureSuccess && result.nativeSignature != null && !result.nativeSignature.isEmpty()) {
             nativeSignatureTextView.setText(result.nativeSignature);
             nativeSignatureTextView.setTextColor(getColorRes(R.color.native_indicator));
             nativeSignatureStatus.setText("直接解析APK - 成功");
             nativeSignatureStatus.setTextColor(getColorRes(R.color.status_safe));
+            Log.i(TAG, "Native signature: " + result.nativeSignature);
         } else {
             nativeSignatureTextView.setText("获取失败");
             nativeSignatureTextView.setTextColor(getColorRes(R.color.status_danger));
             nativeSignatureStatus.setText("直接解析APK - 失败");
             nativeSignatureStatus.setTextColor(getColorRes(R.color.status_danger));
+            Log.e(TAG, "Native signature: FAILED");
         }
 
         // APK路径
@@ -318,15 +328,29 @@ public class MainActivity extends AppCompatActivity {
             javaSignatureTextView.setTextColor(getColorRes(R.color.java_indicator));
             javaSignatureStatus.setText("PackageManager - 成功");
             javaSignatureStatus.setTextColor(getColorRes(R.color.status_safe));
+            Log.i(TAG, "Java PM signature: " + result.javaSignature);
         } else {
             javaSignatureTextView.setText("获取失败");
             javaSignatureTextView.setTextColor(getColorRes(R.color.status_danger));
             javaSignatureStatus.setText("PackageManager - 失败");
             javaSignatureStatus.setTextColor(getColorRes(R.color.status_danger));
+            Log.e(TAG, "Java PM signature: FAILED");
         }
 
         // Java层直接解析APK签名（不会被Hook）
-        String javaDirectSignature = SignatureHelper.getSignatureDirectFromApk(this);
+        // 使用analyzeApkSignatures获取完整签名分析，传入PM签名进行对比
+        String pmSig = result.javaSignature; // PM返回的签名
+        Log.i(TAG, "Calling analyzeApkSignatures for: " + apkPath + " with PM sig: " + pmSig);
+        SignatureHelper.SignatureAnalysisResult analysisResult = SignatureHelper.analyzeApkSignatures(apkPath, pmSig);
+
+        Log.i(TAG, "V1 Signature: " + (analysisResult.v1Signature != null ? analysisResult.v1Signature : "N/A"));
+        Log.i(TAG, "V2 Signature: " + (analysisResult.v2Signature != null ? analysisResult.v2Signature : "N/A"));
+        Log.i(TAG, "Primary Signature: " + (analysisResult.primarySignature != null ? analysisResult.primarySignature : "N/A"));
+        Log.i(TAG, "Tampering Detected: " + analysisResult.tamperingDetected);
+        Log.i(TAG, "NPatch Tampering: " + analysisResult.npatchTampering);
+        Log.i(TAG, "Report: " + analysisResult.tamperingReport);
+
+        String javaDirectSignature = analysisResult.primarySignature;
         if (javaDirectSignature != null && !javaDirectSignature.isEmpty()) {
             javaDirectSignatureTextView.setText(javaDirectSignature);
             javaDirectSignatureTextView.setTextColor(getColorRes(R.color.native_indicator));
@@ -339,8 +363,17 @@ public class MainActivity extends AppCompatActivity {
             javaDirectSignatureStatus.setTextColor(getColorRes(R.color.status_danger));
         }
 
-        // 签名对比结果
-        if (result.signaturesMatch) {
+        // 签名对比结果 - 优先检测NPatch篡改
+        if (analysisResult.npatchTampering) {
+            signatureComparisonResult.setBackgroundColor(getColorRes(R.color.status_danger_bg));
+            signatureMatchIcon.setText("⚠");
+            signatureMatchIcon.setTextColor(getColorRes(R.color.status_danger));
+            signatureMatchStatus.setText("检测到NPatch篡改!");
+            signatureMatchStatus.setTextColor(getColorRes(R.color.status_danger));
+            comparisonResultTextView.setText(analysisResult.tamperingReport);
+            comparisonResultTextView.setTextColor(getColorRes(R.color.status_danger));
+            Toast.makeText(this, "警告：检测到NPatch签名篡改!", Toast.LENGTH_LONG).show();
+        } else if (result.signaturesMatch) {
             signatureComparisonResult.setBackgroundColor(getColorRes(R.color.status_safe_bg));
             signatureMatchIcon.setText("✓");
             signatureMatchIcon.setTextColor(getColorRes(R.color.status_safe));
@@ -624,6 +657,20 @@ public class MainActivity extends AppCompatActivity {
         Log.i(TAG, "Detection risk level: " + detection.riskLevel);
         Log.i(TAG, "Detection count: " + detection.getDetectionCount());
         Log.i(TAG, "Is secure: " + (nativeResult.isSecure && !detection.hasAnyDetection()));
+
+        // 执行NPatch专项检测
+        SignatureHelper.NPatchDetectionResult npatchResult = SignatureHelper.detectNPatchTampering(this);
+        Log.i(TAG, "=== NPatch Detection Result ===");
+        Log.i(TAG, npatchResult.toString());
+
+        // 如果检测到NPatch篡改，更新检测结果
+        if (npatchResult.npatchDetected) {
+            detection.npatchDetected = true;
+            detection.riskLevel += 40;
+            Log.w(TAG, "NPatch TAMPERING CONFIRMED!");
+            Log.w(TAG, "Real APK signature: " + npatchResult.realSignature);
+            Log.w(TAG, "Certificate: " + npatchResult.realCertSubject);
+        }
     }
 
     /**

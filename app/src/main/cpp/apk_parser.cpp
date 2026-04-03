@@ -25,6 +25,71 @@ namespace security {
 // ==================== 辅助函数 ====================
 
 /**
+ * 从 /proc/self/maps 获取真实的APK路径
+ * 绕过NPatch对sourceDir的Hook
+ */
+static std::string getRealApkPathFromProcMaps() {
+    FILE* maps = fopen("/proc/self/maps", "r");
+    if (!maps) {
+        LOGE("Failed to open /proc/self/maps");
+        return "";
+    }
+
+    char line[1024];
+    std::vector<std::string> foundPaths;
+    int lineCount = 0;
+
+    while (fgets(line, sizeof(line), maps)) {
+        lineCount++;
+        std::string lineStr(line);
+
+        // 查找 base.apk
+        size_t pos = lineStr.find("base.apk");
+        if (pos != std::string::npos) {
+            // 提取路径
+            size_t pathStart = lineStr.find('/');
+            if (pathStart != std::string::npos) {
+                std::string path = lineStr.substr(pathStart);
+                // 去除尾部空白
+                while (!path.empty() && (path.back() == '\n' || path.back() == '\r' || path.back() == ' ')) {
+                    path.pop_back();
+                }
+                // 截取到 base.apk 结束
+                pos = path.find("base.apk");
+                if (pos != std::string::npos) {
+                    path = path.substr(0, pos + 8); // 8 = strlen("base.apk")
+                    foundPaths.push_back(path);
+                    LOGD("Found APK in maps: %s", path.c_str());
+                }
+            }
+        }
+    }
+
+    fclose(maps);
+    LOGI("Scanned %d lines in /proc/self/maps, found %zu APK paths", lineCount, foundPaths.size());
+
+    // 优先返回非NPatch缓存的路径
+    for (const auto& path : foundPaths) {
+        if (path.find("/cache/npatch/") == std::string::npos) {
+            // 检查文件是否存在
+            struct stat st;
+            if (stat(path.c_str(), &st) == 0) {
+                LOGI("Selected real APK path from maps: %s", path.c_str());
+                return path;
+            }
+        }
+    }
+
+    // 如果只有NPatch缓存路径，也返回
+    if (!foundPaths.empty()) {
+        LOGW("Only NPatch cache path found: %s", foundPaths[0].c_str());
+        return foundPaths[0];
+    }
+
+    return "";
+}
+
+/**
  * 安全读取文件内容
  */
 static std::vector<uint8_t> safeReadFile(const std::string& path, size_t maxSize = 100 * 1024 * 1024) {
@@ -107,11 +172,19 @@ std::string ApkSignatureParser::getApkPathFromContext(JNIEnv* env, jobject conte
         env->ExceptionClear();
     }
 
+    // 首先尝试从 /proc/self/maps 获取真实APK路径（绕过NPatch Hook）
+    std::string realApkPath = getRealApkPathFromProcMaps();
+    if (!realApkPath.empty() && realApkPath.find("/cache/npatch/") == std::string::npos) {
+        LOGI("Got real APK path from /proc/self/maps: %s", realApkPath.c_str());
+        return realApkPath;
+    }
+
+    // 回退到 sourceDir（可能被NPatch Hook）
     try {
         jclass contextClass = env->GetObjectClass(context);
         if (!contextClass) {
             LOGE("Failed to get context class");
-            return "";
+            return realApkPath; // 返回proc/maps的结果
         }
 
         // 方法1: 直接获取 sourceDir
@@ -119,13 +192,13 @@ std::string ApkSignatureParser::getApkPathFromContext(JNIEnv* env, jobject conte
                                                          "()Landroid/content/pm/ApplicationInfo;");
         if (!getApplicationInfo) {
             env->DeleteLocalRef(contextClass);
-            return "";
+            return realApkPath;
         }
 
         jobject applicationInfo = env->CallObjectMethod(context, getApplicationInfo);
         if (!applicationInfo) {
             env->DeleteLocalRef(contextClass);
-            return "";
+            return realApkPath;
         }
 
         jclass appInfoClass = env->GetObjectClass(applicationInfo);
@@ -144,7 +217,11 @@ std::string ApkSignatureParser::getApkPathFromContext(JNIEnv* env, jobject conte
                 env->DeleteLocalRef(contextClass);
 
                 if (!apkPath.empty()) {
-                    LOGI("Got APK path from Context: %s", apkPath.c_str());
+                    LOGI("Got APK path from Context sourceDir: %s", apkPath.c_str());
+                    // 如果proc/maps找到了非NPatch路径，优先使用
+                    if (!realApkPath.empty() && realApkPath.find("/cache/npatch/") == std::string::npos) {
+                        return realApkPath;
+                    }
                     return apkPath;
                 }
             }
@@ -161,10 +238,17 @@ std::string ApkSignatureParser::getApkPathFromContext(JNIEnv* env, jobject conte
         }
     }
 
-    return "";
+    return realApkPath;
 }
 
 std::string ApkSignatureParser::getSelfApkPath() {
+    // 方法0: 首先尝试从 /proc/self/maps 获取真实APK路径（绕过NPatch）
+    std::string mapsPath = getRealApkPathFromProcMaps();
+    if (!mapsPath.empty() && mapsPath.find("/cache/npatch/") == std::string::npos) {
+        LOGI("Got real APK path from /proc/self/maps: %s", mapsPath.c_str());
+        return mapsPath;
+    }
+
     // 方法1: 读取 /proc/self/cmdline 获取包名
     char packageName[256] = {0};
     FILE* cmdline = fopen("/proc/self/cmdline", "r");
@@ -224,6 +308,12 @@ std::string ApkSignatureParser::getSelfApkPath() {
                 return path;
             }
         }
+    }
+
+    // 如果所有方法都失败，返回 /proc/self/maps 的结果（即使是NPatch缓存）
+    if (!mapsPath.empty()) {
+        LOGW("Returning /proc/self/maps result as fallback: %s", mapsPath.c_str());
+        return mapsPath;
     }
 
     LOGE("Failed to find APK path");
@@ -390,6 +480,18 @@ static bool parseApkSigningBlock(const std::vector<uint8_t>& apkData, size_t cdO
 
 /**
  * 从 V2/V3 签名块中提取证书
+ *
+ * V2 Signature Block格式:
+ * - signers: length-prefixed sequence of signer
+ *   - signer: length-prefixed
+ *     - signed_data: length-prefixed
+ *       - digests: length-prefixed sequence
+ *       - certificates: length-prefixed sequence of certificate
+ *       - additional_attributes: length-prefixed sequence
+ *     - min_sdk: uint32
+ *     - max_sdk: uint32
+ *     - signatures: length-prefixed sequence
+ *     - public_key: length-prefixed
  */
 static bool extractCertificateFromV2Block(const std::vector<uint8_t>& block,
                                            std::vector<uint8_t>& certificate) {
@@ -399,58 +501,80 @@ static bool extractCertificateFromV2Block(const std::vector<uint8_t>& block,
     }
 
     size_t pos = 0;
+    LOGI("=== Starting V2 block parsing, total size: %zu ===", block.size());
 
-    // signers 数组大小
+    // signers 数组: 4字节长度 + 数据
     uint32_t signersSize = readU32(block.data(), pos);
     pos += 4;
-    LOGD("Signers size: %u", signersSize);
+    LOGD("Signers sequence size: %u", signersSize);
 
-    if (pos + 4 > block.size()) return false;
+    if (pos + 4 > block.size()) {
+        LOGE("Block too small for signer");
+        return false;
+    }
 
-    // 第一个 signer 的大小
+    // signer: 4字节长度 + 数据
     uint32_t signerSize = readU32(block.data(), pos);
+    size_t signerStart = pos;
     pos += 4;
-    LOGD("Signer size: %u", signerSize);
+    LOGD("Signer size: %u, starts at: %zu", signerSize, signerStart);
 
-    if (pos + 4 > block.size()) return false;
+    if (pos + 4 > block.size()) {
+        LOGE("Block too small for signed_data");
+        return false;
+    }
 
-    // signedData 大小
+    // signed_data: 4字节长度 + 数据
     uint32_t signedDataSize = readU32(block.data(), pos);
     size_t signedDataStart = pos;
     pos += 4;
-    LOGD("SignedData size: %u", signedDataSize);
+    LOGD("SignedData size: %u, starts at: %zu", signedDataSize, signedDataStart);
 
-    // 解析 signedData 内部结构
-    // signedData: digests + certificates + additionalAttributes
-
-    if (pos + 4 > block.size()) return false;
-
-    // digests 数组大小
+    // 现在解析 signed_data 内部结构
+    // digests: 4字节长度 + 数据
+    if (pos + 4 > block.size()) {
+        LOGE("Block too small for digests size");
+        return false;
+    }
     uint32_t digestsSize = readU32(block.data(), pos);
-    pos += 4 + digestsSize;
-    LOGD("Digests size: %u", digestsSize);
+    pos += 4 + digestsSize;  // 跳过 digests
+    LOGD("Digests size: %u, now at pos: %zu", digestsSize, pos);
 
-    if (pos + 4 > block.size()) return false;
-
-    // certificates 数组大小
-    uint32_t certsSize = readU32(block.data(), pos);
+    // certificates: 4字节长度 + 数据
+    if (pos + 4 > block.size()) {
+        LOGE("Block too small for certificates size");
+        return false;
+    }
+    uint32_t certsArraySize = readU32(block.data(), pos);
+    size_t certsArrayStart = pos;
     pos += 4;
-    LOGD("Certificates array size: %u", certsSize);
+    LOGD("Certificates array size: %u, starts at: %zu", certsArraySize, certsArrayStart);
 
-    if (pos + 4 > block.size()) return false;
-
-    // 第一个 certificate 大小
+    // 第一个 certificate: 4字节长度 + 数据
+    if (pos + 4 > block.size()) {
+        LOGE("Block too small for certificate size");
+        return false;
+    }
     uint32_t certSize = readU32(block.data(), pos);
     pos += 4;
-    LOGD("Certificate size: %u", certSize);
+    LOGD("First certificate size: %u", certSize);
 
     if (pos + certSize > block.size()) {
-        LOGE("Certificate data exceeds block size");
+        LOGE("Certificate data exceeds block, pos=%zu, certSize=%u, blockLen=%zu",
+             pos, certSize, block.size());
         return false;
     }
 
     certificate.assign(block.begin() + pos, block.begin() + pos + certSize);
-    LOGI("Extracted certificate, size: %zu", certificate.size());
+    LOGI("Certificate extracted successfully, %u bytes", certSize);
+
+    // 打印证书的前32字节用于调试
+    char hexBuf[128] = {0};
+    for (size_t i = 0; i < (size_t)std::min(32, (int)certSize); i++) {
+        snprintf(hexBuf + i*2, 3, "%02x", certificate[i]);
+    }
+    LOGD("Certificate first 32 bytes: %s", hexBuf);
+
     return true;
 }
 
